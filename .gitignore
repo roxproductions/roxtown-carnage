@@ -1,0 +1,8 @@
+node_modules/
+dist/
+errors.log
+*.zip
+.DS_Store
+Thumbs.db
+# your host's own Passenger config (see .htaccess.example)
+.htaccess

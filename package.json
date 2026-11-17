@@ -1,0 +1,26 @@
+{
+  "name": "roxtown-carnage",
+  "version": "1.0.0",
+  "description": "Top-down multiplayer crime sandbox for the browser, in the spirit of GTA2 deathmatch",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build:artifact": "node build-artifact.js"
+  },
+  "author": "Rox Productions",
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.22.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "game",
+    "multiplayer",
+    "browser-game",
+    "websocket",
+    "top-down",
+    "canvas"
+  ]
+}

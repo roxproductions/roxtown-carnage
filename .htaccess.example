@@ -1,0 +1,11 @@
+# For cPanel / DirectAdmin hosts that run Node.js apps through CloudLinux Passenger ("Setup Node.js App").
+# The control panel normally writes this file for you when you create the app; keep a copy here because deleting or
+# re-uploading the app folder can remove it, and without it the game URL answers 403 Forbidden.
+# Copy it to .htaccess in the app folder and fill in your own paths (the panel shows them).
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION BEGIN
+PassengerAppRoot "/home/<user>/domains/<your-domain>/public_html/<path>/crosstown"
+PassengerBaseURI "/<path>/crosstown"
+PassengerNodejs "/home/<user>/nodevenv/domains/<your-domain>/public_html/<path>/crosstown/20/bin/node"
+PassengerAppType node
+PassengerStartupFile server.js
+# DO NOT REMOVE. CLOUDLINUX PASSENGER CONFIGURATION END
