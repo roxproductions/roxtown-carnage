@@ -89,6 +89,119 @@
     return c;
   }
   map.helipads.forEach((_, i) => spawnHeli(i));
+  // the army tank on its street, speedboats at their moorings, and the fire trucks that come out when a car burns.
+  // Tank and boats come back to their spot a while after they're wrecked or left lying around.
+  const TANK = S.TANK, BOAT = S.BOAT, FIRE = S.FIRE;
+  const homeRespawn = [];
+  function special(t, x, y, a, extra) {
+    return Object.assign({ id: nextId++, t, col: 0, x, y, a, vx: 0, vy: 0, spin: 0, oil: 0, hp: S.CARS[t].hp, driver: 0, drv: false, dead: false, burn: 0, removeAt: 0,
+      lastAtk: 0, lastAtkT: -99, lastDriver: 0, lastDriverT: -99, cws: [0, 0, 0, 0], cwk: 0, up: 0, z: 0, vz: 0 }, extra);
+  }
+  function spawnHome(kind, i) {
+    const s = kind === 'tank' ? map.tankSpot : map.boats[i];
+    if (!s) return false;
+    const c = kind === 'tank' ? special(TANK, s.x, s.y, s.a, { home: 'tank', homeI: 0, col: 0 })
+      : special(BOAT, s.x, s.y, s.a, { home: 'boat', homeI: i, col: [0, 4, 2, 6][i % 4], cws: [999, 0, 0, 0], cwk: 0 }); // the boat's minigun never runs dry
+    if (S.carHits(map, c)) return false;
+    for (const o of cars.values()) if (Math.hypot(o.x - c.x, o.y - c.y) < 60) return false;
+    cars.set(c.id, c);
+    return true;
+  }
+  // at the start, parked cars make room for the tank and boats; anything still blocked waits in the respawn queue
+  const clearHome = (s, r) => { if (s) for (const o of [...cars.values()]) if (!o.home && !o.driver && Math.hypot(o.x - s.x, o.y - s.y) < r) cars.delete(o.id); };
+  if (map.tankSpot) { clearHome(map.tankSpot, 70); if (!spawnHome('tank', 0)) homeRespawn.push({ kind: 'tank', i: 0, at: 0 }); }
+  (map.boats || []).forEach((s, i) => { clearHome(s, 60); if (!spawnHome('boat', i)) homeRespawn.push({ kind: 'boat', i, at: 0 }); });
+  // ---- the fire brigade: a car catches fire and a fire truck comes (out of sight, then up the road), parks near
+  // it and hoses it down with its water cannon. Put out in time, the car survives as a smoking wreck. Then it drives
+  // off. The water cannon knocks people over (and puts them out if they're burning). Jack a fire truck and the
+  // cannon is yours: Ctrl.
+  const FIRE_MAX = 2;
+  function callFireTruck(target) {
+    if (target.t === HELI || target.t === BOAT || MAXPEDS === 0) return;
+    const trucks = [...cars.values()].filter((c) => c.fireAI);
+    if (trucks.length >= FIRE_MAX || trucks.some((c) => c.fireAI.target === target.id)) return;
+    const idle = trucks.find((c) => c.fireAI.state === 'leave');
+    if (idle) { idle.fireAI.target = target.id; idle.fireAI.state = 'go'; return; }
+    for (let i = 0; i < 50; i++) {
+      const ang = rand() * Math.PI * 2, dist = 420 + rand() * 380;
+      const tx = Math.floor((target.x + Math.cos(ang) * dist) / TILE), ty = Math.floor((target.y + Math.sin(ang) * dist) / TILE);
+      if (S.tile(map, tx, ty) !== T.ROAD) continue;
+      const vert = map.roadCols.has(tx), hor = map.roadRows.has(ty);
+      if (vert === hor) continue;
+      const x = (tx + 0.5) * TILE, y = (ty + 0.5) * TILE;
+      if (nearAnyone(x, y, 380)) continue;
+      const a = Math.atan2(target.y - y, target.x - x), sa = vert ? (Math.sin(a) > 0 ? Math.PI / 2 : -Math.PI / 2) : (Math.cos(a) > 0 ? 0 : Math.PI);
+      const c = special(FIRE, x, y, sa, { col: 1, siren: true, fireAI: { target: target.id, state: 'go', k: 0, spray: 0, born: time } });
+      if (S.carHits(map, c) || [...cars.values()].some((o) => Math.hypot(o.x - c.x, o.y - c.y) < 80)) continue;
+      cars.set(c.id, c);
+      return;
+    }
+  }
+  function waterCannon(c, a, by) {
+    const C = S.CARS[c.t], ox = c.x + Math.cos(c.a) * (C.len / 2 - 14), oy = c.y + Math.sin(c.a) * (C.len / 2 - 14), R = 190;
+    ev(['ws', c.id, r3(a)]);
+    const inJet = (x, y) => { const dx = x - ox, dy = y - oy, d = Math.hypot(dx, dy); return d < R && d > 4 && Math.abs(S.angDiff(Math.atan2(dy, dx), a)) < 0.22 + 10 / d && S.los(map, ox, oy, x, y); };
+    for (const q of cars.values()) {
+      if (q === c || q.dead || (q.z || 0) > 10 || !inJet(q.x, q.y)) continue;
+      if (q.burn > 0) { q.douse = (q.douse || 0) + 0.1; q.burn = Math.min(5, q.burn + 0.12); if (q.douse > 2.2) { q.burn = 0; q.douse = 0; q.hp = Math.max(q.hp, 25); ev(['xo', q.id]); } }
+      q.vx += Math.cos(a) * 18 / S.CARS[q.t].mass; q.vy += Math.sin(a) * 18 / S.CARS[q.t].mass;
+    }
+    for (const q of players.values()) {
+      if (!q.alive || q.ped.car || q.duel || q.id === by || !inJet(q.ped.x, q.ped.y)) continue;
+      q.ped.fire = 0; q.ped.kx += Math.cos(a) * 140; q.ped.ky += Math.sin(a) * 140; q.ped.nj = 0.6;
+    }
+    for (const n of npcs.values()) {
+      if (n.duel || !inJet(n.x, n.y)) continue;
+      n.fire = 0; n.kx += Math.cos(a) * 140; n.ky += Math.sin(a) * 140;
+      if (n.kind === 0) { n.panic = time + 3; n.wx = undefined; }
+    }
+  }
+  function stepFireTrucks() {
+    // an empty burning car smoulders on until the fire brigade gets there (25 s at most); if no truck could set out, keep calling
+    for (const q of cars.values()) {
+      if (!(q.burn > 0) || q.dead || q.driver || q.t === HELI || q.t === BOAT || MAXPEDS === 0) continue;
+      q.burnT = (q.burnT || 0) + DT;
+      let coming = false; for (const f of cars.values()) if (f.fireAI && f.fireAI.target === q.id && f.fireAI.state === 'go') { coming = true; break; }
+      if (!coming && Math.floor(q.burnT * 2) !== Math.floor((q.burnT - DT) * 2)) { callFireTruck(q); continue; }
+      if (coming && q.burn < 1.2 && q.burnT < 25) q.burn = 1.2;
+    }
+    for (const c of [...cars.values()]) {
+      const F = c.fireAI;
+      if (!F) continue;
+      if (c.dead || c.burn > 0 || c.driver) { c.fireAI = null; c.siren = false; continue; } // wrecked or taken: the crew's gone
+      let tgt = F.target && cars.get(F.target);
+      if (!tgt || tgt.dead || !(tgt.burn > 0)) {
+        // that one's out (or gone up): anything else burning nearby?
+        tgt = null;
+        for (const q of cars.values()) if (q.burn > 0 && !q.dead && q.t !== HELI && q.t !== BOAT && Math.hypot(q.x - c.x, q.y - c.y) < 1300) { tgt = q; break; }
+        F.target = tgt ? tgt.id : 0; F.state = tgt ? 'go' : 'leave';
+      }
+      if (F.state === 'leave') {
+        c.siren = false;
+        F.k = F.away ? botDrive(F, c, F.away[0], F.away[1], 0.6, false) : 0;
+        if (!F.away) { const sp = map.carSpots[Math.floor(rand() * map.carSpots.length)]; F.away = [sp.x, sp.y]; }
+        if (!nearAnyone(c.x, c.y, 650) || time - F.born > 120) { cars.delete(c.id); ev(['rc', c.id]); }
+        continue;
+      }
+      c.siren = true; F.away = null;
+      const d = Math.hypot(tgt.x - c.x, tgt.y - c.y), a = Math.atan2(tgt.y - c.y, tgt.x - c.x);
+      if (d < 175 && S.los(map, c.x, c.y, tgt.x, tgt.y)) {
+        // in range: stop and hose it down
+        const v = Math.hypot(c.vx, c.vy);
+        F.k = v > 25 ? K.DOWN : 0;
+        F.spray -= DT;
+        if (F.spray <= 0) { F.spray = 0.1; waterCannon(c, a, 0); }
+      } else F.k = botDrive(F, c, tgt.x, tgt.y, 0.7, false);
+    }
+  }
+  function stepHomeRespawn() {
+    for (let i = homeRespawn.length - 1; i >= 0; i--) {
+      const r = homeRespawn[i], s = r.kind === 'tank' ? map.tankSpot : map.boats[r.i];
+      if (time < r.at || !s || nearAnyone(s.x, s.y, 420)) continue;
+      if ([...cars.values()].some((c) => c.home === r.kind && c.homeI === r.i)) { homeRespawn.splice(i, 1); continue; }
+      if (spawnHome(r.kind, r.i)) homeRespawn.splice(i, 1);
+    }
+  }
   let carRespawnQueue = 0;
   // Cars someone drove and then left behind fade out after a minute; cars still in their parked spot stay.
   const ABANDON = 60, ABANDON_FADE = 2;
@@ -123,14 +236,14 @@
     for (const d of duels.values()) busy.add(d.car);
     for (const p of players.values()) if (p.cuff && time < p.cuff.until) busy.add(p.cuff.car);
     for (const c of cars.values()) {
-      if (c.driver || c.ai || busy.has(c.id) || c.dead || c.t === HELI) { c.usedT = time; c.fadeAt = 0; continue; }
+      if (c.driver || c.ai || c.fireAI || busy.has(c.id) || c.dead || c.t === HELI) { c.usedT = time; c.fadeAt = 0; continue; }
       if (!(c.lastDriverT > -50 || c.cop || c.wasTraffic)) continue; // never moved: still a parked car
       const last = Math.max(c.lastDriverT, c.usedT || 0);
       if (!c.fadeAt && time - last > ABANDON) c.fadeAt = time;
     }
   }
   function dropAbandoned(c) {
-    if (c.cop || c.wasTraffic) { cars.delete(c.id); ev(['rc', c.id]); }
+    if ((c.cop || c.wasTraffic) && !c.home) { cars.delete(c.id); ev(['rc', c.id]); }
     else removeCar(c); // a fresh parked car turns up somewhere out of sight
   }
   // points for taking out people on the street add up (10 a pedestrian, 20 for a splat, 30 a cop): every 100 gives
@@ -143,7 +256,11 @@
       if (p.alive && p.ped && p.ped.hp < 100) { p.ped.hp = Math.min(100, p.ped.hp + 25); ev(['hu', p.id]); }
     }
   }
-  function removeCar(c) { cars.delete(c.id); carRespawnQueue++; ev(['rc', c.id]); }
+  function removeCar(c) {
+    cars.delete(c.id); ev(['rc', c.id]);
+    if (c.home) homeRespawn.push({ kind: c.home, i: c.homeI, at: time + (c.home === 'tank' ? 45 : 30) }); // back at its spot later
+    else if (c.t !== FIRE) carRespawnQueue++;
+  }
 
   // ------------------------------------------------------------------ players
   const BOT_NAMES = ['Rico', 'Slim', 'Duke', 'Moose', 'Vito', 'Ziggy', 'Lefty', 'Spud', 'Dino', 'Gus', 'Weasel', 'Boomer'];
@@ -203,6 +320,7 @@
     if (atk) { const a = players.get(atk); if (a && a.quad > 0) dmg *= 2; if (a && a.bot && !q.bot) dmg *= SKILL[BOT_SKILL].dmg; }
     if (ped.ar > 0) { const ab = Math.min(ped.ar, dmg * 0.7); ped.ar -= ab; dmg -= ab; }
     ped.hp -= dmg;
+    if (dmg > 0) ped.nj = 0.6; // being shot (or burnt, or hit) pins you down: you can't jump for a moment
     if (atk && atk !== q.id) { q.lastAtk = atk; q.lastAtkT = time; }
     if (ped.hp <= 0) killPlayer(q, atk, cause);
   }
@@ -229,7 +347,7 @@
     if (c.up & S.UP.ARMOR) dmg *= 0.6;
     c.hp -= dmg;
     if (c.ai && atk && c.hp < S.carStats(c).hp * 0.6) { const a = players.get(atk); bailOut(c, a && a.ped); }
-    if (c.hp <= 0 && c.burn <= 0) { c.burn = 5; ev(['cf', c.id]); } // on fire: 5 s to get out (or away)
+    if (c.hp <= 0 && c.burn <= 0) { c.burn = 5; c.burnT = 0; c.douse = 0; ev(['cf', c.id]); callFireTruck(c); } // on fire: 5 s to get out (or away), and the fire brigade's on its way
     if (c.hp < -100) explodeCar(c);
   }
   function explodeCar(c) {
@@ -349,6 +467,16 @@
       // from behind the wheel you only have the car's own weapons
       const c = cars.get(ped.car);
       if (!c) return;
+      if (c.t === FIRE && !p.footSel) { p.cd = 0.1; waterCannon(c, c.a, p.id); return; } // the fire truck's water cannon
+      if (c.t === TANK && !p.footSel) {
+        // the tank's cannon: a shell out of the barrel, as often as it can reload
+        p.cd = 1.1;
+        const ta = Math.cos(c.a), tb = Math.sin(c.a), ox = c.x + ta * 44, oy = c.y + tb * 44;
+        projs.push({ id: nextId++, k: 1, x: ox, y: oy, z: 6, vx: ta * 720 + c.vx, vy: tb * 720 + c.vy, life: 1.8, owner: p.id, born: time, shell: true });
+        ev(['r', r1(ox), r1(oy)]); ev(['tk', c.id]);
+        noticeShot(p, c.x, c.y);
+        return;
+      }
       const k = p.footSel ? -1 : cwSel(c);
       if (k < 0) return;
       const W = S.CARWEAPONS[k], C = S.CARS[c.t];
@@ -373,6 +501,7 @@
         return;
       }
       p.cd = W.rate; c.cws[k]--;
+      if (c.t === BOAT && W.id === 'cmg') { p.cd = W.rate * 0.45; c.cws[k] = Math.max(c.cws[k], 999); } // the boat's minigun: twice as fast, never empty
       if (W.id === 'cmg') {
         for (const side of [-1, 1]) {
           const lx = C.len / 2 + 4, ly = side * (C.wid / 2 - 4);
@@ -559,6 +688,18 @@
       ped.a = c.a; ped.z = c.z || 0; ped.vz = 0; ped.gz = 0; ped.jvx = 0; ped.jvy = 0; ped.kx = 0; ped.ky = 0;
       return;
     }
+    if (c.t === BOAT) {
+      // out of a boat: onto the nearest dry land within a jump; out on open water there's only the river
+      let best = null;
+      for (let r = C.wid / 2 + 10; r < 170 && !best; r += 10) for (let i = 0; i < 24; i++) {
+        const an = (i / 24) * Math.PI * 2, x = c.x + Math.cos(an) * r, y = c.y + Math.sin(an) * r;
+        if (S.tileW(map, x, y) !== T.WATER && !S.solid(map, x, y) && !S.solid(map, x + 8, y) && !S.solid(map, x - 8, y) && !S.solid(map, x, y + 8) && !S.solid(map, x, y - 8)) { best = { x, y }; break; }
+      }
+      ped.x = best ? best.x : c.x + rx * (C.wid / 2 + 12); ped.y = best ? best.y : c.y + ry * (C.wid / 2 + 12);
+      ped.a = c.a; ped.z = 0; ped.vz = 0; ped.gz = 0; ped.jvx = 0; ped.jvy = 0; ped.kx = 0; ped.ky = 0;
+      S.collideCircle(map, ped, S.PED.r, 0);
+      return;
+    }
     const off = C.wid / 2 + 12, z0 = c.z || 0;
     // a wall for someone stepping out at the car's height (up on a roof, the roof itself is floor)
     const solid = (x, y) => S.solid(map, x, y) && S.heightAt(map, x, y) > z0 + 6;
@@ -608,14 +749,14 @@
         const pair = Math.min(p.id, v.id) + ':' + Math.max(p.id, v.id);
         if (!best.jk || best.jk.pair !== pair || time - best.jk.t > 30) best.jk = { pair, n: 0, t: time };
         best.jk.n++; best.jk.t = time;
-        if (best.jk.n >= S.Fight.DUEL_AT && !p.duel && !v.duel) { startDuel(p, v, best); return; }
+        if (best.jk.n >= S.Fight.DUEL_AT && !p.duel && !v.duel) offerFight(p, v, best); // the jack goes ahead; a fist fight is offered to both
         exitCar(v, true); ev(['j', p.id, v.id]); p.score += 100;
         for (const n of npcs.values()) if (n.owner === v.id) { n.foe = p.id; n.foeT = time + 12; } // your crew goes for whoever pulled you out
         v.ped.safeFrom = { car: best.id, until: time + 1.2 }; // thrown out beside their own car: it can't run them over
         if (v.bot) { v.want = { car: best.id, until: time + 8, after: time + 0.6 + rand() * 0.6 }; v.holdUntil = 0; } // a bot wants its car back
       }
     }
-    best.driver = p.id; ped.car = best.id; ped.fire = 0; p.footSel = false; best.fadeAt = 0; best.usedT = time;
+    best.driver = p.id; ped.car = best.id; ped.fire = 0; p.footSel = false; best.fadeAt = 0; best.usedT = time; best.fireAI = null;
     if (best.t === HELI) { best.hm = 1; best.exitOnLand = false; best.idleT = 0; }
     ped.x = best.x; ped.y = best.y; ped.a = best.a;
     ev(['e', p.id, best.id]);
@@ -762,6 +903,39 @@
   // a cop as a fighter: stands in for a player in the fight (its id is the cop's id, negated)
   function copFighter(n) { return { id: -n.id, cop: n, bot: true, alive: true, name: 'OFFICER', ped: { x: n.x, y: n.y, car: 0, fire: 0, kx: 0, ky: 0, z: 0, vz: 0, hit: null } }; }
   const fighterGone = (q) => (q.cop ? !npcs.has(q.cop.id) : !players.has(q.id) || !q.alive);
+  // A fist fight is a choice: when the same two players keep stealing one car off each other, both get asked
+  // (FIGHT? Y / walk away). It starts only if both say yes within 8 seconds; either can say no. Bots decide quickly.
+  function offerFight(a, b, c) {
+    const until = time + 8;
+    a.offer = { with: b.id, car: c.id, until, ok: false, ask: time };
+    b.offer = { with: a.id, car: c.id, until, ok: false, ask: time };
+    ev(['fo', a.id, b.id]);
+  }
+  function answerFight(p, yes) {
+    const o = p.offer;
+    if (!o || time > o.until) { p.offer = null; return; }
+    const q = players.get(o.with);
+    if (!yes || !q || !q.alive || !p.alive || !q.offer || q.offer.with !== p.id) {
+      p.offer = null; if (q && q.offer && q.offer.with === p.id) q.offer = null;
+      ev(['fn', p.id, o.with]); return;
+    }
+    o.ok = true;
+    ev(['fy', p.id, o.with]);
+    if (q.offer.ok) {
+      p.offer = q.offer = null;
+      const c = cars.get(o.car);
+      if (c && !c.dead && !c.duel && !p.duel && !q.duel && Math.hypot(p.ped.x - q.ped.x, p.ped.y - q.ped.y) < 900) startDuel(p, q, c);
+      else ev(['fn', p.id, q.id]);
+    }
+  }
+  function stepOffers() {
+    for (const p of players.values()) {
+      const o = p.offer;
+      if (!o) continue;
+      if (time > o.until || !p.alive || p.duel) { p.offer = null; continue; }
+      if (p.bot && !o.ok && time > o.ask + 1 + (p.id % 7) * 0.15) answerFight(p, rand() < 0.65);
+    }
+  }
   function startDuel(a, b, c) {
     if (a.ped.car) exitCar(a, false);
     if (b.ped.car) exitCar(b, false);
@@ -907,7 +1081,7 @@
     const ped = b.ped;
     let best = null, bd = maxD;
     for (const q of cars.values()) {
-      if (q.dead || q.burn > 0 || q.t === HELI || q.duel || (q.z || 0) > 2) continue;
+      if (q.dead || q.burn > 0 || q.t === HELI || q.t === BOAT || q.duel || (q.z || 0) > 2) continue;
       if (q.driver || (q.ai && !(traffic && Math.hypot(q.vx, q.vy) < 140))) continue;
       const d = Math.hypot(q.x - ped.x, q.y - ped.y);
       if (d < bd) { bd = d; best = q; }
@@ -1043,6 +1217,7 @@
     const tq = tg.ped.car ? cars.get(tg.ped.car) : tg.ped, tx = tq.x, ty = tq.y;
     let k = botDrive(b, c, tx, ty, RACE_PACE[BOT_SKILL], true);
     // car weapons: guns and the jump when the target is dead ahead, oil and mines when it's on our tail
+    if (c.t === TANK) { const da = Math.abs(S.angDiff(Math.atan2(ty - c.y, tx - c.x), c.a)), d = Math.hypot(tx - c.x, ty - c.y); if (da < 0.08 && d < 520 && d > 90) k |= K.FIRE; }
     const w = cwSel(c);
     if (w >= 0 && time > (b.cwT || 0)) {
       const da = Math.abs(S.angDiff(Math.atan2(ty - c.y, tx - c.x), c.a)), d = Math.hypot(tx - c.x, ty - c.y);
@@ -1215,6 +1390,30 @@
     const [, dx, dy] = opt[0];
     n.dx = dx; n.dy = dy;
     n.wx = (tx + dx + 0.25 + rand() * 0.5) * TILE; n.wy = (ty + dy + 0.25 + rand() * 0.5) * TILE;
+  }
+  // People on foot watch out for cars: one coming at them gets a quick sidestep out of its path (most of the time:
+  // someone looking the other way still gets flattened). Cops and gang members too.
+  function npcDodge(n) {
+    if (n.dodgeT > time) { moveNpc(n, n.dodgeA, 165); return true; }
+    for (const c of cars.values()) {
+      if (c.dead || (c.z || 0) > 10 || c.t === HELI) continue;
+      const sp = Math.hypot(c.vx, c.vy);
+      if (sp < 60) continue;
+      const dx = n.x - c.x, dy = n.y - c.y;
+      if (Math.abs(dx) > 220 || Math.abs(dy) > 220) continue;
+      const C = S.CARS[c.t], hx = c.vx / sp, hy = c.vy / sp;
+      const ahead = dx * hx + dy * hy, side = -dx * hy + dy * hx;
+      if (ahead < 0 || ahead > C.len / 2 + sp * 0.42 || Math.abs(side) > C.wid / 2 + 18) continue;
+      // a coin toss per car (kept while it's coming): about half the time they see it in time
+      if (n.dodgeCar !== c.id) { n.dodgeCar = c.id; n.dodgeOk = rand() < (n.kind === 0 ? 0.5 : 0.7); }
+      if (!n.dodgeOk) return false;
+      const s = Math.sign(side) || (rand() < 0.5 ? 1 : -1);
+      n.dodgeA = Math.atan2(hx * s, -hy * s); n.dodgeT = time + 0.32;
+      if (n.kind === 0) { n.panic = Math.max(n.panic, time + 1.5); n.wx = undefined; }
+      moveNpc(n, n.dodgeA, 165);
+      return true;
+    }
+    return false;
   }
   function moveNpc(n, ang, sp) {
     n.a = ang; n.mv = sp > 0 ? 1 : 0;
@@ -1400,7 +1599,7 @@
   // Leave them standing on the street, they wander off after a while. Shoot one that isn't yours and its friends
   // fight back.
   const GANG_MAX = 5, CREW_MAX = 3;
-  const SEATS = [1, 1, 3, 3, 2, 2, 3, 1, 3, 0]; // passenger seats per car type
+  const SEATS = [1, 1, 3, 3, 2, 2, 3, 1, 3, 0, 0, 1, 2]; // passenger seats per car type (tank: none)
   function spawnGang() {
     const live = [...players.values()].filter((p) => p.alive && !p.bot);
     if (!live.length || !paveTiles.length) return;
@@ -1429,7 +1628,7 @@
       if (n.owner === p.id) { n.board = time + 8; continue; } // already yours: come on, get in
       if (n0 >= Math.min(CREW_MAX, seats)) break;
       n.owner = p.id; n.board = time + 8; n.foe = 0; n0++;
-      ev(['cj', n.id, p.id, n0]);
+      ev(['cm', n.id, p.id, n0]);
     }
   }
   // out of the car beside it, ready to fight (or just tag along)
@@ -1462,7 +1661,7 @@
     }
     return best;
   }
-  const crewShot = (owner, n, ox, oy, a, ignoreCar) => { owner.crewing = true; hitscan(owner, ox, oy, a + (rand() - 0.5) * 0.28, 420, n.gun === 2 ? 7 : 11, n.gun === 2 ? 2 : 0, ignoreCar, 0); owner.crewing = false; };
+  const crewShot = (owner, n, ox, oy, a, ignoreCar) => { owner.crewing = true; hitscan(owner, ox, oy, a + (rand() - 0.5) * (owner.id ? 0.16 : 0.28), 420, n.gun === 2 ? 7 : 11, n.gun === 2 ? 2 : 0, ignoreCar, 0); owner.crewing = false; };
   function stepGang(n) {
     n.cd -= DT;
     const owner = n.owner ? players.get(n.owner) : null;
@@ -1490,7 +1689,7 @@
       const want = Math.atan2(tg.y - n.y, tg.x - n.x), d = Math.hypot(tg.x - n.x, tg.y - n.y);
       n.a += Math.max(-6 * DT, Math.min(6 * DT, S.angDiff(want, n.a)));
       if (n.cd <= 0 && Math.abs(S.angDiff(want, n.a)) < 0.25) {
-        n.cd = (n.gun === 2 ? 0.22 : 0.6) + rand() * 0.35;
+        n.cd = (n.gun === 2 ? 0.22 : n.owner ? 0.5 : 0.6) + rand() * 0.3;
         crewShot(owner || { id: 0, gangN: n }, n, n.x + Math.cos(n.a) * 12, n.y + Math.sin(n.a) * 12, n.a, 0);
       }
       if (d > 200) { n.sp = 85; chase(n, tg.x, tg.y, 180); } else n.mv = 0;
@@ -1541,9 +1740,11 @@
       if ((n.kind === 0 || (n.kind === 2 && !n.owner)) && !nearAnyone(n.x, n.y, 1500)) { npcs.delete(n.id); continue; }
       if (n.fire > 0) { n.fire -= DT; damageNpc(n, 26 * DT, n.fireBy, 22); if (!npcs.has(n.id)) continue; }
       if (n.duel) { n.mv = 0; continue; }
+      if (npcDodge(n)) continue;
       if (n.kind === 0) stepPedestrian(n); else if (n.kind === 2) stepGang(n); else stepCop(n);
     }
     stepRiders();
+    stepOffers();
     // wanted levels fade once the police have lost sight of you for long enough
     for (const p of players.values()) {
       if (!p.alive) { p.heat = 0; continue; }
@@ -1637,19 +1838,21 @@
     if (!frozen) stepRace();
     stepTraffic();
     if (tick % 30 === 3) stepHeliRespawn();
+    if (tick % 30 === 9) stepHomeRespawn();
+    stepFireTrucks();
 
     for (const c of [...cars.values()]) {
       const drv = c.driver ? players.get(c.driver) : null;
       c.drv = !!(drv && drv.alive);
-      if (c.ai) c.drv = true;
+      if (c.ai || c.fireAI) c.drv = true;
       const grounded = !S.carAir(map, c);
-      const imp = S.stepCar(map, c, drv ? drv.curK : c.ai ? c.ai.k : 0, DT);
+      const imp = S.stepCar(map, c, drv ? drv.curK : c.ai ? c.ai.k : c.fireAI ? c.fireAI.k : 0, DT);
       if (grounded && c.vz > 0 && c.t !== HELI) ev(['cj', c.id, r1(c.x), r1(c.y)]); // off a ramp
       if (c.t === HELI) { stepHeliLife(c, drv); if (!cars.has(c.id)) continue; }
       if (imp > 160) damageCar(c, (imp - 160) * 0.1, 0);
       if (drv && drv.alive) { drv.ped.x = c.x; drv.ped.y = c.y; drv.ped.a = c.a; }
       if (c.burn > 0) { c.burn -= DT; if (c.burn <= 0) explodeCar(c); }
-      if (S.deepWater(map, c.x, c.y) && !(c.z > 0) && c.t !== HELI) {
+      if (S.deepWater(map, c.x, c.y) && !(c.z > 0) && c.t !== HELI && c.t !== BOAT) {
         ev(['w', r1(c.x), r1(c.y)]);
         if (c.driver) { const d = players.get(c.driver); c.driver = 0; if (d) { d.ped.car = 0; killPlayer(d, c.lastAtk && time - c.lastAtkT < 6 ? c.lastAtk : 0, 23); } }
         removeCar(c);
@@ -1731,6 +1934,9 @@
           const dmg = (imp - 70) * 0.15;
           damageCar(A, dmg * (mb / (ma + mb)) * 2, B.driver || 0);
           damageCar(B, dmg * (ma / (ma + mb)) * 2, A.driver || 0);
+          // the tank crushes whatever it rams
+          if (A.t === TANK && B.t !== TANK) damageCar(B, S.carStats(B).hp * 0.35, A.driver || 0);
+          if (B.t === TANK && A.t !== TANK) damageCar(A, S.carStats(A).hp * 0.35, B.driver || 0);
         }
         if (imp > 90) ev(['b', r1(cx), r1(cy), Math.round(imp)]);
       }
@@ -1787,9 +1993,9 @@
         const C = S.CARS[c.t], dx = n.x - c.x, dy = n.y - c.y;
         if (Math.abs(dx) > C.len / 2 + 12 || Math.abs(dy) > C.len / 2 + 12) continue;
         const ca = Math.cos(c.a), sa = Math.sin(c.a);
-        const lx = dx * ca + dy * sa, ly = -dx * sa + dy * ca, ex = C.len / 2 + 6, ey = C.wid / 2 + 6;
+        const lx = dx * ca + dy * sa, ly = -dx * sa + dy * ca, ex = C.len / 2 + 4, ey = C.wid / 2 + 4;
         if (Math.abs(lx) >= ex || Math.abs(ly) >= ey) continue;
-        if (Math.hypot(c.vx, c.vy) > 60 && !(n.owner && n.owner === c.driver)) {
+        if (Math.hypot(c.vx, c.vy) > 95 && !(n.owner && n.owner === c.driver)) { // a crawling car just shoves you aside
           const killer = c.driver || (c.lastDriver && time - c.lastDriverT < 3 ? c.lastDriver : 0);
           killNpc(n, killer, 20); c.vx *= 0.97; c.vy *= 0.97;
           break;
@@ -1968,7 +2174,7 @@
   // ------------------------------------------------------------------ race mode
   // One race-start pickup per city. Touch it and everyone races: 3 laps through the checkpoints in order, the first
   // one is the start/finish line. First home gets the chequered flag and a champagne shower, then it's back to normal.
-  const RACE = { st: 0, t: 0, win: 0, by: 0, laps: 3 }; // st: 0 pickup waiting, 1 countdown, 2 racing, 3 finished, 4 pickup coming back
+  const RACE = { st: 0, t: 0, win: 0, by: 0, laps: 2 }; // st: 0 pickup waiting, 1 countdown, 2 racing, 3 finished, 4 pickup coming back
   const RACE_R = 95, RACE_MAX = 420, RACE_BACK = 45;
   const cps = map.race.cps;
   function raceReset() { RACE.st = 0; RACE.t = 0; RACE.win = 0; RACE.by = 0; for (const p of players.values()) p.race = null; }
@@ -2032,7 +2238,11 @@
           r.lap++;
           if (r.lap >= RACE.laps) {
             RACE.st = 3; RACE.win = p.id; RACE.t = time + 8; p.score += 2500;
-            ev(['ra', 4, p.id, r1(q.x), r1(q.y)]);
+            // the winner takes a frag for every other racer
+            const beaten = [...players.values()].filter((o) => o !== p && o.race).length;
+            p.frags += beaten;
+            ev(['ra', 4, p.id, r1(q.x), r1(q.y), beaten]);
+            if (state === 'play' && beaten && p.frags >= FRAG_LIMIT) endMatch();
             return;
           }
           r.next = 1; ev(['ra', 3, p.id, r.lap]);
@@ -2104,7 +2314,7 @@
       const me = { cu: p.cuff && time < p.cuff.until ? Math.ceil((p.cuff.until - time) * 10) / 10 : 0, wl: stars(p), wi: Math.round(interest(p) * 100), al: p.alive ? 1 : 0, rs: p.alive ? 0 : Math.max(0, Math.ceil(p.respawnAt - time)), inv: p.inv.slice(), w: p.w, fr: p.frags, sc: p.score, q: Math.ceil(Math.max(0, p.quad)), iv: Math.ceil(Math.max(0, p.invis)) };
       if (p.alive) {
         me.hp = Math.max(0, Math.ceil(d.hp)); me.ar = Math.ceil(d.ar);
-        me.ped = [r3(d.x), r3(d.y), r3(d.a), r3(d.kx), r3(d.ky), r3(d.z), r3(d.vz), r3(d.jvx), r3(d.jvy), r3(d.gz), d.sl ? 1 : 0];
+        me.ped = [r3(d.x), r3(d.y), r3(d.a), r3(d.kx), r3(d.ky), r3(d.z), r3(d.vz), r3(d.jvx), r3(d.jvy), r3(d.gz), d.sl ? 1 : 0, r3(Math.max(0, d.nj || 0))];
         if (d.car) { const c = cars.get(d.car); if (c) { const k = cwSel(c); me.car = [r3(c.x), r3(c.y), r3(c.a), r3(c.vx), r3(c.vy), r3(c.spin), r3(c.oil), c.t, (c.up & 7) | (c.t !== HELI && k >= 0 ? 8 : 0), r3(c.z || 0), r3(c.vz || 0), c.hm || 0]; me.cw = k >= 0 && !p.footSel ? [k, c.cws[k], c.cws.filter((n) => n > 0).length] : null; } }
         me.cr = crewOf(p);
       }
@@ -2156,6 +2366,7 @@
           else if (m.a === 'n' && p.alive) cycleWeapon(p, 1);
           else if (m.a === 'p' && p.alive) cycleWeapon(p, -1);
           else if (m.a === 'h' && p.alive && p.ped.car) { ev(['h', p.ped.car]); recruit(p); }
+          else if (m.a === 'y' || m.a === 'q') answerFight(p, m.a === 'y');
           // bots, from the menu: + / - how many, > / < how good. Anyone can change them, like the police
           else if ('+-<>'.includes(m.a) && m.a) {
             if (m.a === '+' || m.a === '-') { FILL_BOTS = Math.max(0, Math.min(8, FILL_BOTS + (m.a === '+' ? 1 : -1))); syncBots(); }

@@ -63,8 +63,14 @@
     { name: 'BRUISER', h: 15, kind: 'muscle', len: 50, wid: 24, max: 500, acc: 400, rev: 150, turn: 2.6, grip: 6.8, hp: 325, mass: 1.25 },
     { name: 'POLICE CAR', h: 17, kind: 'police', len: 50, wid: 24, max: 470, acc: 360, rev: 150, turn: 2.6, grip: 7.6, hp: 350, mass: 1.2 },
     { name: 'HELICOPTER', h: 20, kind: 'heli', len: 56, wid: 22, max: 380, acc: 280, rev: 160, turn: 2.3, grip: 3, hp: 999, mass: 2 },
+    { name: 'TANK', h: 22, kind: 'tank', len: 64, wid: 36, max: 220, acc: 170, rev: 110, turn: 1.7, grip: 10, hp: 2400, mass: 7 },
+    { name: 'SPEEDBOAT', h: 12, kind: 'boat', len: 54, wid: 22, max: 440, acc: 300, rev: 120, turn: 2.1, grip: 2.4, hp: 420, mass: 1.2 },
+    { name: 'FIRE TRUCK', h: 30, kind: 'firetruck', len: 80, wid: 30, max: 360, acc: 240, rev: 110, turn: 1.8, grip: 6.5, hp: 900, mass: 3 },
   ];
   S.HELI = 9; // index of the helicopter in S.CARS
+  S.TANK = 10; // the army tank: one per city
+  S.BOAT = 11; // speedboats with a minigun, on the water (and under the bridges)
+  S.FIRE = 12; // fire trucks: they come when a car's burning
   // car upgrades, found on some cars around the city
   S.UP = { TURBO: 1, ARMOR: 2, GRIP: 4, ARMED: 8 };
   S.UP_NAMES = [[1, 'TURBO'], [2, 'ARMOUR'], [4, 'SPORT GRIP'], [8, 'MOUNTED WEAPON']];
@@ -208,12 +214,13 @@
     const helipads = [], tramps = [];
     {
       const RH = S.rng((seed ^ 0x2545f491) >>> 0);
-      const want = [1, 2, 3][size];
+      const want = [2, 2, 3][size]; // at least two in every city
       const cands = buildings.filter((b) => b.w >= 2 && b.h >= 2).sort(() => RH() - 0.5);
       const isRoadT = (x, y) => get(x, y) === T.ROAD;
-      for (const T0 of cands) {
+      for (const gap of [12, 6]) for (const T0 of cands) { // second pass: allow them closer together (a small city)
         if (helipads.length >= want) break;
-        if (helipads.some((h) => Math.hypot(h.x / TILE - (T0.x + T0.w / 2), h.y / TILE - (T0.y + T0.h / 2)) < 12)) continue;
+        if (T0.pad) continue;
+        if (helipads.some((h) => Math.hypot(h.x / TILE - (T0.x + T0.w / 2), h.y / TILE - (T0.y + T0.h / 2)) < gap)) continue;
         // a spot right against its wall, on pavement or grass; out of the way beats next to the road
         const spots = [];
         for (let i = T0.x; i < T0.x + T0.w; i++) { spots.push([i, T0.y - 1, 0, 1]); spots.push([i, T0.y + T0.h, 0, -1]); }
@@ -330,8 +337,33 @@
     }
     const dn = S.DISTRICTS.slice();
     for (let i = dn.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [dn[i], dn[j]] = [dn[j], dn[i]]; }
+    // speedboats moored along the shore, and the army tank parked on a quiet street. Own RNG, so nothing else changes.
+    const boats = [];
+    let tankSpot = null;
+    {
+      const RB = S.rng((seed ^ 0x0b0a75ed) >>> 0);
+      const wet = (x, y) => get(x, y) === T.WATER;
+      const cands = [];
+      for (let y = 2; y < H - 2; y++) for (let x = 2; x < W - 2; x++) {
+        if (!wet(x, y)) continue;
+        // land right next to it on one side (a mooring), water along the shore both ways and out from it (a boat fits)
+        const land = (dx, dy) => { const t = get(x + dx, y + dy); return t === T.PAVE || t === T.GRASS || t === T.ROAD; };
+        const shore = [[0, -1], [0, 1], [-1, 0], [1, 0]].find(([dx, dy]) => land(dx, dy));
+        if (!shore) continue;
+        const [sx, sy] = shore;
+        if (!wet(x - sx, y - sy) || !wet(x + sy, y - sx) || !wet(x - sy, y + sx) || !wet(x + sy - sx, y - sx - sy) || !wet(x - sy - sx, y + sx - sy)) continue;
+        cands.push([x, y, shore]);
+      }
+      const want = [2, 3, 4][size];
+      for (const gap of [14, 7]) for (const [x, y, [dx, dy]] of cands.sort(() => RB() - 0.5)) {
+        if (boats.length >= want) break;
+        if (boats.some((b) => Math.hypot(b.x / TILE - x, b.y / TILE - y) < gap)) continue;
+        boats.push({ x: (x + 0.5) * TILE + dx * 6, y: (y + 0.5) * TILE + dy * 6, a: Math.atan2(dx, -dy) }); // moored against the shore, nose along it
+      }
+      if (carSpots.length) { const s = carSpots[Math.floor(RB() * carSpots.length)]; tankSpot = { x: s.x, y: s.y, a: s.a }; }
+    }
     return {
-      seed, size, islands, bridges, rail, ramps, helipads, tramps, shops, race, rampAt: new Map(ramps.map((r) => [r.y * W + r.x, r.d])), w: W, h: H, tiles, heights, buildings, trees, lots, spawns, pickupSpots, carSpots, cwSpots,
+      seed, size, islands, bridges, rail, ramps, helipads, tramps, shops, race, boats, tankSpot, rampAt: new Map(ramps.map((r) => [r.y * W + r.x, r.d])), w: W, h: H, tiles, heights, buildings, trees, lots, spawns, pickupSpots, carSpots, cwSpots,
       roadCols, roadRows, districts: dn.slice(0, 9),
     };
   };
@@ -413,6 +445,7 @@
     // jumping: Space on foot. Like GTA2 a jump is always one hop forward in the direction you face.
     // In the air (and when you land on a car and slide across its roof) the arrows steer the hop.
     if (p.z === undefined) { p.z = 0; p.vz = 0; p.jvx = 0; p.jvy = 0; p.sl = 0; }
+    if (p.nj > 0) p.nj -= dt; // just took a hit: no jumping for a moment
     const hb = S.heightAt(m, p.x, p.y);
     const gz = Math.max(p.gz || 0, p.z >= hb - 6 ? hb : 0); // car roof (from the server) or building roof
     let air = p.z > gz + 0.5 || p.vz > 0;
@@ -423,7 +456,7 @@
       if (gz === 0 && m.tramps && m.tramps.some((t) => Math.abs(t.x - p.x) < S.TRAMP_R && Math.abs(t.y - p.y) < S.TRAMP_R && Math.hypot(t.x - p.x, t.y - p.y) < S.TRAMP_R)) {
         p.vz = S.TRAMP; air = true; slide = false; p.sl = 0; p.tr = 1;
         p.jvx = Math.cos(p.a) * 70; p.jvy = Math.sin(p.a) * 70; // a gentle hop: you come down on a two-tile roof, not past it
-      } else if (k & K.HAND) { p.vz = S.PED.jump; air = true; slide = false; p.sl = 0; p.jvx = Math.cos(p.a) * S.PED.run; p.jvy = Math.sin(p.a) * S.PED.run; }
+      } else if (k & K.HAND && !(p.nj > 0)) { p.vz = S.PED.jump; air = true; slide = false; p.sl = 0; p.jvx = Math.cos(p.a) * S.PED.run; p.jvy = Math.sin(p.a) * S.PED.run; }
     }
     if (air || slide) {
       const sp = Math.hypot(p.jvx, p.jvy);
@@ -446,11 +479,18 @@
 
   // ---------------------------------------------------------------- car physics
   const CP = [[0.5, 0.5], [0.5, -0.5], [-0.5, 0.5], [-0.5, -0.5], [0, 0.5], [0, -0.5], [0.5, 0], [-0.5, 0], [0.25, 0.5], [0.25, -0.5], [-0.25, 0.5], [-0.25, -0.5]];
+  // a boat floats on water, and passes under the bridges; anything else is a wall to it (and so is the edge of the map)
+  S.boatWall = (m, x, y) => {
+    const tx = Math.floor(x / TILE), ty = Math.floor(y / TILE);
+    if (tx < 0 || ty < 0 || tx >= m.w || ty >= m.h) return true;
+    if (m.tiles[ty * m.w + tx] === T.WATER) return false;
+    return !(m.bridges || []).some((b) => tx >= b.x && tx < b.x + 2 && ty >= b.y && ty < b.y + 2);
+  };
   S.carHits = function (m, c) {
-    const C = S.CARS[c.t], ca = Math.cos(c.a), sa = Math.sin(c.a);
+    const C = S.CARS[c.t], ca = Math.cos(c.a), sa = Math.sin(c.a), boat = c.t === S.BOAT;
     for (const [u, v] of CP) {
-      const lx = u * C.len, ly = v * C.wid;
-      if (S.wall(m, c.x + lx * ca - ly * sa, c.y + lx * sa + ly * ca, c.z || 0)) return true;
+      const lx = u * C.len, ly = v * C.wid, px = c.x + lx * ca - ly * sa, py = c.y + lx * sa + ly * ca;
+      if (boat ? S.boatWall(m, px, py) : S.wall(m, px, py, c.z || 0)) return true;
     }
     return false;
   };

@@ -8,7 +8,7 @@ const S = require('./shared/game.js');
 const PORT = +process.env.PORT || 8080;
 const LAG = +process.env.LAG || 0; // simulated one-way latency for testing (ms)
 const BASE = {
-  bots: process.env.BOTS !== undefined ? +process.env.BOTS : 1,
+  bots: process.env.BOTS !== undefined ? +process.env.BOTS : 0,
   frags: +process.env.FRAGS || 10,
   minutes: +process.env.MINUTES || 10,
   arsenal: process.env.ARSENAL === '1',

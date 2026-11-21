@@ -79,7 +79,7 @@ ANNOUNCE = {
     'victory': 'Victory!', 'brutal': 'Brutal!', 'excellent': 'Pure dead brilliant!', 'carcrush': 'Car crush!',
     'skyhigh': 'Sky high!', 'firestarter': 'Fire starter!', 'combo': 'Combo!',
     # race mode
-    'race': 'Race on! Three laps, nae rules!', 'three': 'Three!', 'two': 'Two!', 'one': 'One!', 'go': 'Go! Go! Go!',
+    'race': 'Race on! Two laps, nae rules!', 'three': 'Three!', 'two': 'Two!', 'one': 'One!', 'go': 'Go! Go! Go!',
     'lastlap': 'Final lap! Floor it!', 'champ': 'Race winner! Get the bubbly oot!',
 }
 COP_LINES = {

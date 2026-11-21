@@ -36,6 +36,13 @@
   .keys { font-family: system-ui, sans-serif; font-size:12px; color:#999; margin-top:16px; line-height:1.7; }
   .keys b { color:#ddd; font-weight:600; }
   .credit { font-family: system-ui, sans-serif; font-size:10px; color:#777; margin-top:10px; }
+  #offer { position:fixed; left:50%; bottom:18%; transform:translateX(-50%); z-index:5; display:none; flex-direction:column; align-items:center; gap:10px; padding:14px 18px; background:rgba(10,10,12,.86); border:2px solid var(--yel); font: 20px Impact, 'Arial Black', sans-serif; letter-spacing:1px; color:#fff; text-align:center; max-width:calc(100vw - 32px); }
+  #offer .ob { display:flex; gap:10px; flex-wrap:wrap; justify-content:center; }
+  #offer button { font: 18px Impact, 'Arial Black', sans-serif; letter-spacing:1px; padding:8px 14px; background:#1b1b1f; color:#eee; border:2px solid #555; cursor:pointer; }
+  #offer button#offy { background:var(--yel); color:#000; border-color:var(--yel); }
+  #offer button:disabled { opacity:.5; cursor:default; }
+  #offer kbd { font: 13px monospace; padding:1px 5px; border:1px solid currentColor; border-radius:3px; margin-left:4px; }
+  #offbar { width:100%; height:4px; background:#333; } #offbar i { display:block; height:100%; width:100%; background:var(--yel); }
   #msg { position:fixed; inset:0; display:none; align-items:center; justify-content:center; z-index:6; background:rgba(0,0,0,.75); font-size:30px; flex-direction:column; gap:16px; }
   #msg.soft { background:rgba(0,0,0,.35); font-size:22px; } #msg.soft button { display:none; }
   #msg button { font: 22px Impact, sans-serif; padding:10px 24px; background:var(--yel); border:3px solid #000; cursor:pointer; }
@@ -150,7 +157,7 @@
       <b>Tab</b> menu &amp; scores · <b>T</b> chat · <b>M</b> mute<br>
       Keep stealing the same car back and forth and it ends in a <b>fist fight</b>: best of three rounds
     </div>
-    <div class="credit">Voices: Chatterbox TTS (Resemble AI, MIT) from the VCTK and Alba voices (University of Edinburgh, CC BY 4.0), and Qwen3-TTS (Apache 2.0) · version <span id="ver">2026.11.17a</span></div>
+    <div class="credit">Voices: Chatterbox TTS (Resemble AI, MIT) from the VCTK and Alba voices (University of Edinburgh, CC BY 4.0), and Qwen3-TTS (Apache 2.0) · version <span id="ver">2026.11.21b</span></div>
   </div>
 </div>
 <div id="menu" hidden>
@@ -190,6 +197,7 @@
         <dt><kbd>Space</kbd></dt><dd>Jump / handbrake</dd>
         <dt><kbd>Enter</kbd></dt><dd>Get in / out, car-jack</dd>
         <dt><kbd>Z</kbd><kbd>X</kbd></dt><dd>Previous / next weapon (fists too), car weapons too</dd>
+        <dt><kbd>Y</kbd><kbd>Q</kbd></dt><dd>Accept / turn down a fist fight when you're offered one</dd>
         <dt><kbd>H</kbd></dt><dd>Horn (next to gang members: pick them up for your crew)</dd>
         <dt><kbd>R</kbd></dt><dd>Next radio station</dd>
         <dt><kbd>K</kbd></dt><dd>Radio on / off</dd>
@@ -221,12 +229,13 @@
     <div class="mhint">TAB or ESC closes this menu</div>
   </div>
 </div>
+<div id="offer" role="dialog" aria-live="assertive"><div id="offert">FIST FIGHT?</div><div class="ob"><button id="offy">FIGHT <kbd>Y</kbd></button><button id="offn">WALK AWAY <kbd>Q</kbd></button></div><div id="offbar"><i></i></div></div>
 <div id="msg"><div id="msgt">DISCONNECTED</div><button onclick="location.reload()">RECONNECT</button></div>
 <input id="chat" type="text" maxlength="120" placeholder="Say something… (Enter to send, Esc to cancel)">
 <div id="touch"></div>
-<script src="voices.js?v=2026.11.17a"></script>
-<script src="shared.js?v=2026.11.17a"></script>
-<script src="fight.js?v=2026.11.17a"></script>
-<script src="client.js?v=2026.11.17a"></script>
+<script src="voices.js?v=2026.11.21b"></script>
+<script src="shared.js?v=2026.11.21b"></script>
+<script src="fight.js?v=2026.11.21b"></script>
+<script src="client.js?v=2026.11.21b"></script>
 </body>
 </html>

@@ -15,7 +15,7 @@
   optEl.hidden = false;
   const stEl = document.getElementById('roomst');
   let lobbyMode = store.get('cc_net') || 'online';
-  let lobbyBots = 1; // bots start ON with one bot, every time; more from the menu in the game
+  let lobbyBots = 0; // bots start OFF, every time; turn them on (one bot) here, more from the menu in the game
   let lobbySkill = Math.max(1, Math.min(5, +(store.get('cc_skill') || 3)));
   let lobbySize = +(store.get('cc_msize') ?? 1); if (!(lobbySize >= 0 && lobbySize <= 2)) lobbySize = 1;
   let lobbyIsl = +(store.get('cc_isl') ?? 0); if (!(lobbyIsl >= 0 && lobbyIsl <= 2)) lobbyIsl = 0;
@@ -251,7 +251,7 @@
       const [, ack36, base, ped, car, cw] = mrow.split('|');
       const b = base.split('.').map(dec);
       const me = { al: b[0], rs: b[1], hp: b[2], ar: b[3], w: b[4], fr: b[5], sc: b[6], q: b[7], iv: b[8], inv: b.slice(9, 18), wl: b[19] || 0, wi: b[20] || 0, cu: (b[21] || 0) / 10, pp: b[22] || 0, cr: b[23] || 0 };
-      if (ped) { const v = ped.split('.').map(dec); me.ped = [v[0] / 64, v[1] / 64, v[2] / 10000, v[3] / 16, v[4] / 16, v[5] / 64, v[6] / 16, v[7] / 16, v[8] / 16, v[9] / 64, v[10] || 0]; }
+      if (ped) { const v = ped.split('.').map(dec); me.ped = [v[0] / 64, v[1] / 64, v[2] / 10000, v[3] / 16, v[4] / 16, v[5] / 64, v[6] / 16, v[7] / 16, v[8] / 16, v[9] / 64, v[10] || 0, (v[11] || 0) / 64]; }
       if (car) { const v = car.split('.').map(dec); me.car = [v[0] / 64, v[1] / 64, v[2] / 10000, v[3] / 16, v[4] / 16, v[5] / 1000, v[6] / 1000, v[7], v[8] || 0, (v[9] || 0) / 64, (v[10] || 0) / 16, v[11] || 0]; }
       me.cw = cw ? cw.split('.').map(dec) : null;
       const ack = dec(ack36);
@@ -361,7 +361,7 @@
       for (const { p, me, a } of snap.mes) {
         if (!p.peer || p.peer === myPeer) continue;
         const base = [me.al, me.rs, me.hp || 0, me.ar || 0, me.w, me.fr, me.sc, me.q, me.iv, ...me.inv, 0, me.wl || 0, me.wi || 0, (me.cu || 0) * 10, me.pp || 0, me.cr || 0].map(enc).join('.');
-        const ped = me.ped ? [me.ped[0] * 64, me.ped[1] * 64, me.ped[2] * 10000, me.ped[3] * 16, me.ped[4] * 16, me.ped[5] * 64, me.ped[6] * 16, me.ped[7] * 16, me.ped[8] * 16, me.ped[9] * 64, me.ped[10] || 0].map(enc).join('.') : '';
+        const ped = me.ped ? [me.ped[0] * 64, me.ped[1] * 64, me.ped[2] * 10000, me.ped[3] * 16, me.ped[4] * 16, me.ped[5] * 64, me.ped[6] * 16, me.ped[7] * 16, me.ped[8] * 16, me.ped[9] * 64, me.ped[10] || 0, (me.ped[11] || 0) * 64].map(enc).join('.') : '';
         const car = me.car ? [me.car[0] * 64, me.car[1] * 64, me.car[2] * 10000, me.car[3] * 16, me.car[4] * 16, me.car[5] * 1000, me.car[6] * 1000, me.car[7], me.car[8] || 0, (me.car[9] || 0) * 64, (me.car[10] || 0) * 16, me.car[11] || 0].map(enc).join('.') : '';
         const cw = me.cw ? me.cw.map(enc).join('.') : '';
         m.push(`${p.peer}|${enc(a)}|${base}|${ped}|${car}|${cw}`);
