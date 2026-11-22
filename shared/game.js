@@ -717,7 +717,7 @@
     ped.a = c.a; ped.z = z0; ped.vz = 0; ped.gz = 0; ped.jvx = 0; ped.jvy = 0; // up on a roof: you step out onto it
     S.collideCircle(map, ped, S.PED.r, ped.z || 0);
   }
-  function actEnter(p) {
+  function actEnter(p, only) { // only: a bot going for that one vehicle, and not whatever happens to be nearest
     if (!p.alive || state !== 'play' || p.duel) return;
     const ped = p.ped;
     if (ped.car) {
@@ -728,7 +728,7 @@
     }
     let best = null, bd = 1e9;
     for (const c of cars.values()) {
-      if (c.dead || c.burn > 0 || c.duel) continue;
+      if (c.dead || c.burn > 0 || c.duel || (only && c !== only)) continue;
       // heights: you can jack a car while you're in the middle of a jump, or grab one that's jumping past you, but
       // not one up on a roof while you're down in the street (the helicopter on its roof needs you up there)
       const dz = (ped.z || 0) - (c.z || 0);
@@ -1093,7 +1093,7 @@
     if (d > 0.1) k |= K.RIGHT; else if (d < -0.1) k |= K.LEFT;
     if (Math.abs(d) < 1.2) k |= K.UP;
     b.k = k;
-    if (bd < C.len / 2 + 34 && Math.hypot(best.vx, best.vy) < 140) actEnter(b);
+    if (bd < C.len / 2 + 34 && Math.hypot(best.vx, best.vy) < 140) actEnter(b, best);
     return true;
   }
   // a bot behind the wheel heading for (gx, gy): follows a path over the streets, eases off for corners, backs out
@@ -1152,13 +1152,105 @@
   }
   // Bots race: on GO they run for a car (the grid cars are right behind the line), then drive the course to each
   // checkpoint in turn. Skill sets how hard they push. Once the race is over they go back to fighting.
+  // a bot at the wheel of a boat heading for (gx, gy): follows a path over the water, backs off when stuck
+  function waterOk(tx, ty) { return !S.boatWall(map, (tx + 0.5) * TILE, (ty + 0.5) * TILE); }
+  function waterPath(x0, y0, x1, y1) {
+    const Wm = map.w, Hm = map.h, sx = Math.floor(x0 / TILE), sy = Math.floor(y0 / TILE), gx = Math.floor(x1 / TILE), gy = Math.floor(y1 / TILE);
+    const prev = new Int32Array(Wm * Hm).fill(-1), q = new Int32Array(Wm * Hm), start = sy * Wm + sx;
+    let h = 0, t = 0, goal = -1, gd = 1e9;
+    prev[start] = start; q[t++] = start;
+    while (h < t) {
+      const c = q[h++], cx = c % Wm, cy = (c / Wm) | 0, d = Math.abs(cx - gx) + Math.abs(cy - gy);
+      if (d < gd) { gd = d; goal = c; } // the goal itself, or the nearest water to it
+      if (d === 0) break;
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cx + dx, ny = cy + dy;
+        if (nx < 0 || ny < 0 || nx >= Wm || ny >= Hm) continue;
+        const n = ny * Wm + nx;
+        if (prev[n] !== -1 || !waterOk(nx, ny)) continue;
+        prev[n] = c; q[t++] = n;
+      }
+    }
+    const path = [];
+    for (let c = goal; c !== start && c >= 0; c = prev[c]) path.push([(c % Wm + 0.5) * TILE, (((c / Wm) | 0) + 0.5) * TILE]);
+    path.reverse();
+    if (gd === 0) path.push([x1, y1]);
+    return path;
+  }
+  function waterLos(x0, y0, x1, y1) {
+    const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 12);
+    for (let i = 1; i <= n; i++) {
+      const x = x0 + ((x1 - x0) * i) / n, y = y0 + ((y1 - y0) * i) / n;
+      if (S.boatWall(map, x, y) || S.boatWall(map, x + 12, y) || S.boatWall(map, x - 12, y) || S.boatWall(map, x, y + 12) || S.boatWall(map, x, y - 12)) return false;
+    }
+    return true;
+  }
+  function botBoat(b, c, gx, gy, pace) {
+    const C = S.carStats(c), v = Math.hypot(c.vx, c.vy);
+    b.wpT = (b.wpT || 0) - DT;
+    if (!b.wpath || b.wpT <= 0 || Math.hypot(gx - b.wpGoal[0], gy - b.wpGoal[1]) > 128) { b.wpath = waterPath(c.x, c.y, gx, gy); b.wpi = 0; b.wpGoal = [gx, gy]; b.wpT = 1.5; }
+    let tx = gx, ty = gy;
+    if (b.wpath.length) {
+      while (b.wpi < b.wpath.length - 1 && Math.hypot(b.wpath[b.wpi][0] - c.x, b.wpath[b.wpi][1] - c.y) < 70) b.wpi++;
+      let j = b.wpi;
+      for (let n = b.wpi + 1; n < Math.min(b.wpath.length, b.wpi + 6); n++) if (waterLos(c.x, c.y, b.wpath[n][0], b.wpath[n][1])) j = n; else break;
+      [tx, ty] = b.wpath[j];
+    }
+    if (b.rev > 0) { b.rev -= DT; return K.DOWN | (S.angDiff(Math.atan2(ty - c.y, tx - c.x), c.a) > 0 ? K.LEFT : K.RIGHT); }
+    if (v < 25 && (b.lastK & K.UP)) { b.stuckR = (b.stuckR || 0) + DT; if (b.stuckR > 0.8) { b.rev = 0.7; b.stuckR = 0; b.wpT = 0; } }
+    else b.stuckR = 0;
+    const da = S.angDiff(Math.atan2(ty - c.y, tx - c.x), c.a), corner = Math.abs(da), top = pace * C.max;
+    const want = corner > 1.3 ? 90 : corner > 0.7 ? top * 0.45 : corner > 0.35 ? top * 0.7 : top;
+    let k = 0;
+    if (da > 0.06) k |= K.RIGHT; else if (da < -0.06) k |= K.LEFT;
+    if (v < want) k |= K.UP; else if (v > want + 60) k |= K.DOWN;
+    b.lastK = k;
+    return k;
+  }
+  // a bot on foot heading for an empty boat near the pit
+  function botGetBoat(b, maxD) {
+    const ped = b.ped;
+    let best = null, bd = maxD;
+    for (const q of cars.values()) {
+      if (q.t !== BOAT || q.dead || q.burn > 0 || q.driver || q.duel) continue;
+      const d = Math.hypot(q.x - ped.x, q.y - ped.y);
+      if (d < bd) { bd = d; best = q; }
+    }
+    if (!best) return false;
+    const d = S.angDiff(Math.atan2(best.y - ped.y, best.x - ped.x), ped.a);
+    let k = 0;
+    if (d > 0.1) k |= K.RIGHT; else if (d < -0.1) k |= K.LEFT;
+    if (Math.abs(d) < 1.2) k |= K.UP;
+    b.k = k;
+    if (bd < S.CARS[BOAT].len / 2 + 30) actEnter(b, best);
+    return true;
+  }
   function botRace(b) {
     const ped = b.ped, r = b.race;
     if (RACE.st === 1) { b.k = 0; return true; }
-    const c = ped.car && cars.get(ped.car);
-    if (!c) return botGetCar(b, 500, false);
+    const c = ped.car && cars.get(ped.car), cp = cps[r.next], land = map.race.land;
+    // the checkpoint out at sea: drive to the landing, swap the car for a boat, and back again after
+    if (cp.w && land && (!c || c.t !== BOAT)) {
+      const dl = Math.hypot(ped.x - land.x, ped.y - land.y);
+      if (c && c.t !== HELI && dl > 170) { b.k = botDrive(b, c, land.x, land.y, RACE_PACE[BOT_SKILL], false); return true; }
+      if (c) { if (Math.hypot(c.vx, c.vy) < 60) actEnter(b); else b.k = K.DOWN; return true; }
+      if (dl < 420 && botGetBoat(b, 420)) return true;
+      if (dl > 600 && botGetCar(b, 900, true)) return true; // a long way off: a car first
+      const d = S.angDiff(Math.atan2(land.y - ped.y, land.x - ped.x), ped.a);
+      b.k = dl > 60 ? (d > 0.1 ? K.RIGHT : d < -0.1 ? K.LEFT : 0) | (Math.abs(d) < 1.2 ? K.UP : 0) : 0; // no boat left: wait for one
+      return true;
+    }
+    if (c && c.t === BOAT) {
+      if (cp.w) { b.k = botBoat(b, c, cp.x, cp.y, RACE_PACE[BOT_SKILL]); return true; }
+      // back to shore at the landing, then out and into a car
+      const tx = land ? land.x : c.x, ty = land ? land.y : c.y;
+      if (land && Math.hypot(c.x - tx, c.y - ty) > 105) { b.k = botBoat(b, c, tx, ty, RACE_PACE[BOT_SKILL]); return true; }
+      if (Math.hypot(c.vx, c.vy) < 90) actEnter(b); else b.k = K.DOWN;
+      return true;
+    }
+    if (!c) return botGetCar(b, cp.w ? 500 : 900, !!land);
     if (c.t === HELI) { actEnter(b); return true; } // not racing in that
-    const cp = cps[r.next], v = Math.hypot(c.vx, c.vy);
+    const v = Math.hypot(c.vx, c.vy);
     let k = botDrive(b, c, cp.x, cp.y, RACE_PACE[BOT_SKILL], false);
     // don't flatten other racers still running for their cars at the start
     const ca = Math.cos(c.a), sa = Math.sin(c.a);
@@ -2208,6 +2300,13 @@
       };
       if (!S.carHits(map, c)) cars.set(c.id, c);
     });
+    // and a speedboat for each racer at the pit, for the checkpoint out at sea
+    racers.forEach((r, i) => {
+      const s = map.race.pit[i];
+      if (!s || [...cars.values()].some((o) => Math.hypot(o.x - s.x, o.y - s.y) < 50)) return;
+      const c = special(BOAT, s.x, s.y, s.a, { col: i % S.CAR_COLORS.length, cws: [999, 0, 0, 0], cwk: 0 });
+      if (!S.carHits(map, c)) cars.set(c.id, c);
+    });
     ev(['rl']); // everyone moved: clients snap their view
   }
   function stepRace() {
@@ -2227,6 +2326,13 @@
     } else if (RACE.st === 1) {
       if (time >= RACE.t) { RACE.st = 2; RACE.t = time + RACE_MAX; ev(['ra', 1]); }
     } else if (RACE.st === 2) {
+      // the pit never runs dry: while the race is on, a fresh boat is moored there whenever fewer than two are free
+      const land = map.race.land;
+      if (land && tick % 60 === 0) {
+        const free = [...cars.values()].filter((o) => o.t === BOAT && !o.driver && !o.dead && !(o.burn > 0) && Math.hypot(o.x - land.x, o.y - land.y) < 450).length;
+        const s = free < 2 && map.race.pit.find((q) => ![...cars.values()].some((o) => Math.hypot(o.x - q.x, o.y - q.y) < 60) && ![...players.values()].some((o) => o.alive && Math.hypot(o.ped.x - q.x, o.ped.y - q.y) < 70));
+        if (s) { const c = special(BOAT, s.x, s.y, s.a, { col: Math.floor(rand() * S.CAR_COLORS.length), cws: [999, 0, 0, 0], cwk: 0 }); if (!S.carHits(map, c)) cars.set(c.id, c); }
+      }
       if (time >= RACE.t || state !== 'play') { RACE.st = 4; RACE.t = time + RACE_BACK; ev(['ra', 5]); for (const p of players.values()) p.race = null; return; }
       for (const p of players.values()) {
         if (!p.race) p.race = { lap: 0, next: 1 }; // joined mid-race: still in it
@@ -2234,6 +2340,7 @@
         if (!q) continue;
         const c = cps[r.next];
         if (Math.hypot(q.x - c.x, q.y - c.y) > RACE_R) continue;
+        if (c.w) { const pc = q.car && cars.get(q.car); if (!pc || pc.t !== BOAT) continue; } // out at sea: boats only
         if (r.next === 0) {
           r.lap++;
           if (r.lap >= RACE.laps) {

@@ -1041,7 +1041,11 @@
       midMsg = { txt: (e[2] === myId ? 'YOU' : nm(e[2])) + ' STARTED A RACE · ' + laps + ' LAPS', col: '#fff', t: 3 };
       Audio.announce('race', 'Race on! Two laps!'); Audio.play('fanfare'); race.lastCount = 0;
     } else if (k === 1) { bigMsg = { txt: 'GO!', col: '#4dff7a', t: 1.2 }; Audio.play('airhorn'); Audio.announce('go', 'Go!'); }
-    else if (k === 2 && e[2] === myId) { Audio.play('ding'); race.flash = 1; }
+    else if (k === 2 && e[2] === myId) {
+      Audio.play('ding'); race.flash = 1;
+      const nc = map && map.race && map.race.cps[e[3]];
+      if (nc && nc.w) midMsg = { txt: 'NEXT ONE IS OUT AT SEA: GET A BOAT!', col: '#5adcff', t: 3 };
+    }
     else if (k === 3 && e[2] === myId) {
       Audio.play('ding'); race.flash = 1;
       if (e[3] === laps - 1) { midMsg = { txt: 'FINAL LAP!', col: '#ff7b2b', t: 2.2 }; Audio.announce('lastlap', 'Final lap!'); }
@@ -1096,14 +1100,23 @@
     // your next checkpoint glows, the one after it is a faint ring
     const N = cps.length, nx = cps[mine.next], after = cps[(mine.next + 1) % N];
     if (after !== nx && mine.next !== 0) { ctx.strokeStyle = 'rgba(255,210,31,.25)'; ctx.lineWidth = 3; ctx.setLineDash([10, 10]); ctx.beginPath(); ctx.arc(after.x, after.y, 80, 0, 7); ctx.stroke(); ctx.setLineDash([]); }
-    const pul = 0.5 + 0.5 * Math.sin(t * 6), col = mine.next === 0 ? '255,255,255' : '255,210,31';
+    const pul = 0.5 + 0.5 * Math.sin(t * 6), col = mine.next === 0 ? '255,255,255' : nx.w ? '90,220,255' : '255,210,31';
+    if (nx.w) {
+      // out at sea: a ring of bobbing red and white buoys
+      for (let i = 0; i < 12; i++) {
+        const a = (i / 12) * Math.PI * 2 + t * 0.15, bx = nx.x + Math.cos(a) * 88, by = nx.y + Math.sin(a) * 88, r = 7 + Math.sin(t * 2.5 + i) * 1.2;
+        ctx.fillStyle = 'rgba(255,255,255,.35)'; ctx.beginPath(); ctx.arc(bx, by, r + 4 + 2 * Math.sin(t * 3 + i), 0, 7); ctx.fill();
+        ctx.fillStyle = i % 2 ? '#f4f4f4' : '#e0262a'; ctx.beginPath(); ctx.arc(bx, by, r, 0, 7); ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,.4)'; ctx.lineWidth = 1.5; ctx.stroke();
+      }
+    }
     const gr = ctx.createRadialGradient(nx.x, nx.y, 20, nx.x, nx.y, 95);
     gr.addColorStop(0, `rgba(${col},0)`); gr.addColorStop(0.8, `rgba(${col},${0.12 + 0.1 * pul})`); gr.addColorStop(1, `rgba(${col},0)`);
     ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(nx.x, nx.y, 95, 0, 7); ctx.fill();
     ctx.strokeStyle = `rgba(${col},${0.6 + 0.4 * pul})`; ctx.lineWidth = 5; ctx.setLineDash([18, 12]); ctx.lineDashOffset = -t * 40;
     ctx.beginPath(); ctx.arc(nx.x, nx.y, 80, 0, 7); ctx.stroke(); ctx.setLineDash([]); ctx.lineDashOffset = 0;
     ctx.fillStyle = `rgba(${col},.9)`; ctx.font = 'bold 26px system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(mine.next === 0 ? '🏁' : String(mine.next), nx.x, nx.y);
+    ctx.fillText(mine.next === 0 ? '🏁' : nx.w ? '🚤' + mine.next : String(mine.next), nx.x, nx.y);
   }
   // champagne: the winner sprays it around for a few seconds
   function stepChampagne(dt) {
@@ -1167,7 +1180,7 @@
     race.flash = Math.max(0, race.flash - dt * 2);
     const all = raceStandings(), place = all.findIndex((r) => r.id === myId) + 1;
     const N = cps.length, done = mine.next === 0 ? N - 1 : mine.next - 1;
-    const line = `LAP ${Math.min(laps, mine.lap + 1)}/${laps}   ·   CHECKPOINT ${done}/${N - 1}${mine.next === 0 ? '  →  FINISH' : ''}   ·   ${ordinal(place)} OF ${all.length}`;
+    const line = `LAP ${Math.min(laps, mine.lap + 1)}/${laps}   ·   CHECKPOINT ${done}/${N - 1}${mine.next === 0 ? '  →  FINISH' : cps[mine.next].w ? '  →  BOATS ONLY' : ''}   ·   ${ordinal(place)} OF ${all.length}`;
     const y0 = pad + 112 * u;
     ctx.fillStyle = `rgba(0,0,0,${0.5 + 0.3 * race.flash})`;
     ctx.font = `bold ${17 * u}px system-ui, sans-serif`;
@@ -1182,7 +1195,7 @@
     const [sx, sy] = proj(p.x, p.y, 0), R = 70 * cam.ppu, bob = Math.sin(performance.now() / 160) * 3 * u;
     ctx.save(); ctx.translate(sx + Math.cos(ang) * (R + bob), sy + Math.sin(ang) * (R + bob)); ctx.rotate(ang);
     const s = 1.8 * u * (d < 150 ? 0.8 : 1);
-    ctx.fillStyle = mine.next === 0 ? '#ffffff' : '#ffd21f'; ctx.strokeStyle = '#000'; ctx.lineWidth = 3 * u;
+    ctx.fillStyle = mine.next === 0 ? '#ffffff' : c.w ? '#5adcff' : '#ffd21f'; ctx.strokeStyle = '#000'; ctx.lineWidth = 3 * u;
     ctx.beginPath(); ctx.moveTo(18 * s, 0); ctx.lineTo(-6 * s, -14 * s); ctx.lineTo(-1 * s, 0); ctx.lineTo(-6 * s, 14 * s); ctx.closePath(); ctx.stroke(); ctx.fill();
     ctx.restore();
     txt(Math.round(d / 10) + ' m', sx + Math.cos(ang) * (R + 44 * u), sy + Math.sin(ang) * (R + 44 * u) + 2 * u, 13 * u, '#fff', 'center', 2);
@@ -2249,7 +2262,9 @@
     Audio.listener(cam.x, cam.y);
     // engine
     engineSpeed += ((pred.mode === 'car' ? speed : -1) - engineSpeed) * Math.min(1, dt * 6);
-    Audio.engine(pred.mode === 'car' && pred.c.t !== S.HELI, engineSpeed, !!(readKeys() & K.UP));
+    const inBoat = pred.mode === 'car' && pred.c.t === S.BOAT;
+    Audio.engine(pred.mode === 'car' && pred.c.t !== S.HELI && !inBoat, engineSpeed, !!(readKeys() & K.UP));
+    Audio.boat(inBoat, engineSpeed, !!(readKeys() & (K.UP | K.DOWN)));
     {
       // the nearest helicopter with its rotor turning
       let hp = null, hd = 1e9;
@@ -2446,7 +2461,9 @@
       else if (fl & 1) { if (Math.random() < dt * 3) smoke(x, y, 9, 0.8); }
     };
     for (const r of carRows) drawCarRow(r, false);
-    Audio.skid(pred.mode === 'car' ? render.skidAmt : 0);
+    const boatNow = pred.mode === 'car' && pred.c.t === S.BOAT;
+    Audio.skid(pred.mode === 'car' && !boatNow ? render.skidAmt : 0); // no tyres on a boat: a hard turn throws spray instead
+    Audio.boatSlide(boatNow ? render.skidAmt : 0);
     {
       let near = null, nd = 1e9;
       for (const [sx, sy, ph] of sirens) {
@@ -3563,7 +3580,7 @@
   // and get duller and more echoey with distance. Voices are embedded clips (public/voices.js).
   const Audio = (() => {
     let ac = null, master = null, revIn = null, noise = null, brown = null;
-    let eng = null, skid = null, ann = null;
+    let eng = null, skid = null, ann = null, boat = null;
     let lx = 0, ly = 0;
     const A = { muted: store.get('cc_mute') === '1' };
     // volume mixer (menu sliders): master, effects, voices, radio; 0..1 each, remembered in this browser
@@ -3627,7 +3644,7 @@
         let last = 0;
         for (let i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
         for (let i = 0; i < bd.length; i++) { last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02; bd[i] = last * 3.5; }
-        buildEngine(); buildSkid(); buildGuns();
+        buildEngine(); buildBoat(); buildSkid(); buildGuns();
         loadVoices();
       } catch { ac = null; }
     };
@@ -4054,6 +4071,53 @@
       eng.lp.frequency.setTargetAtTime(260 + rpm * 0.18 + (throttle ? 500 : 0), t, 0.06);
       eng.out.gain.setTargetAtTime(on ? ((throttle ? 0.2 : 0.11) + Math.min(0.06, sp / 9000)) * (Radio.playing ? 0.5 : 1) : 0, t, on ? 0.08 : 0.2);
     };
+    // ---------------- speedboat: a buzzing two-stroke outboard (no gears: the revs follow the throttle), the hull
+    // slapping through the waves and spray hissing off the sides, louder the faster you go and when you carve a turn
+    function buildBoat() {
+      const out = ac.createGain(); out.gain.value = 0; out.connect(master);
+      const send = ac.createGain(); send.gain.value = 0.05; out.connect(send); send.connect(revIn);
+      // the motor: a raspy sawtooth pair through a hard clip, a resonant band like the cowling, and a putter at idle
+      const mot = ac.createGain(); mot.gain.value = 0;
+      const bp = ac.createBiquadFilter(); bp.type = 'bandpass'; bp.frequency.value = 700; bp.Q.value = 1.2;
+      const lp = ac.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 1800;
+      const shaper = ac.createWaveShaper();
+      const c = new Float32Array(1024); for (let i = 0; i < 1024; i++) { const x = i / 512 - 1; c[i] = Math.max(-0.6, Math.min(0.6, x * 3)); }
+      shaper.curve = c; shaper.connect(bp); bp.connect(lp); lp.connect(mot); mot.connect(out);
+      const mk = (type, g) => { const o = ac.createOscillator(); o.type = type; const gg = ac.createGain(); gg.gain.value = g; o.connect(gg); gg.connect(shaper); o.start(); return o; };
+      const o1 = mk('sawtooth', 0.55), o2 = mk('sawtooth', 0.4), o3 = mk('square', 0.18);
+      const put = ac.createOscillator(), pg = ac.createGain(); put.type = 'square'; pg.gain.value = 0; put.connect(pg); pg.connect(mot.gain); put.start();
+      // the water: low wash with slow wave slaps, and a high spray hiss
+      const wn = ac.createBufferSource(); wn.buffer = brown; wn.loop = true;
+      const wl = ac.createBiquadFilter(); wl.type = 'lowpass'; wl.frequency.value = 500; wl.Q.value = 0.7;
+      const wg = ac.createGain(); wg.gain.value = 0; wn.connect(wl); wl.connect(wg); wg.connect(out); wn.start();
+      const slap = ac.createOscillator(), sg = ac.createGain(); slap.frequency.value = 1.3; sg.gain.value = 0; slap.connect(sg); sg.connect(wg.gain); slap.start();
+      const sn = ac.createBufferSource(); sn.buffer = noise; sn.loop = true;
+      const sh = ac.createBiquadFilter(); sh.type = 'bandpass'; sh.frequency.value = 3200; sh.Q.value = 0.9;
+      const spg = ac.createGain(); spg.gain.value = 0; sn.connect(sh); sh.connect(spg); spg.connect(out); sn.start();
+      boat = { out, mot, bp, lp, o1, o2, o3, put, pg, wg, wl, slap, sg, spg, sh, rpm: 900, slide: 0 };
+    }
+    A.boat = (on, sp, throttle) => {
+      if (!boat) return;
+      const t = ac.currentTime, v = clamp(sp / 440, 0, 1);
+      // revs chase the throttle quickly, and sag a little under load while the hull is still pushing water
+      const want = throttle ? 3600 + v * 3000 : 900 + v * 1600;
+      const dA = clamp(t - (boat.lt || t), 0, 0.1); boat.lt = t;
+      boat.rpm += (want - boat.rpm) * (1 - Math.exp(-dA * (throttle ? 7 : 3)));
+      const f = (boat.rpm / 60) * 2; // a twin two-stroke: two firings a revolution
+      boat.o1.frequency.setTargetAtTime(f, t, 0.03); boat.o2.frequency.setTargetAtTime(f * 1.007, t, 0.03); boat.o3.frequency.setTargetAtTime(f / 2, t, 0.03);
+      boat.bp.frequency.setTargetAtTime(500 + boat.rpm * 0.22, t, 0.05);
+      boat.lp.frequency.setTargetAtTime(1200 + boat.rpm * 0.35, t, 0.05);
+      const idle = clamp(1 - (boat.rpm - 900) / 1500, 0, 1); // the putt-putt only at low revs
+      boat.put.frequency.setTargetAtTime(f / 4, t, 0.05); boat.pg.gain.setTargetAtTime(0.05 * idle, t, 0.1);
+      boat.mot.gain.setTargetAtTime(0.09 + (throttle ? 0.07 : 0.02), t, 0.06);
+      boat.wg.gain.setTargetAtTime(0.18 + v * 0.55, t, 0.15); boat.sg.gain.setTargetAtTime(0.1 + v * 0.25, t, 0.2);
+      boat.slap.frequency.setTargetAtTime(1 + v * 3.5, t, 0.3);
+      boat.wl.frequency.setTargetAtTime(380 + v * 700, t, 0.2);
+      boat.spg.gain.setTargetAtTime(v * v * 0.22 + boat.slide * 0.35, t, 0.08);
+      boat.sh.frequency.setTargetAtTime(2600 + v * 1400 + boat.slide * 800, t, 0.08);
+      boat.out.gain.setTargetAtTime(on ? (Radio.playing ? 0.5 : 1) : 0, t, on ? 0.1 : 0.25);
+    };
+    A.boatSlide = (amt) => { if (boat) boat.slide = amt; };
     // ---------------- tyre screech: continuous, follows how hard you slide
     function buildSkid() {
       const n = ac.createBufferSource(); n.buffer = noise; n.loop = true;

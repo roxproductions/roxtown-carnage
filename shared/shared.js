@@ -98,18 +98,20 @@
   S.TRAMP = 760; // a trampoline bounce: high enough to get up there
   S.TRAMP_R = 21;
   S.KERB = 17; // how far parked cars sit from the middle of their lane
+  S.SEA = 9; // extra tiles of open sea beyond the old shoreline
   S.genMap = function (seed, o) {
     o = o || {};
     const size = Math.max(0, Math.min(2, o.size == null ? 1 : o.size | 0));
     const islands = Math.max(0, Math.min(2, o.islands | 0));
     const R = S.rng(seed);
-    const W = [64, 88, 116][size], H = W;
+    // open sea all round the city, wide enough to take a speedboat out for a spin (and for the race's water checkpoint)
+    const SEA = S.SEA, CW = [64, 88, 116][size], W = CW + SEA * 2, H = W;
     const NB = [4, 6, 8][size], SC = (a) => a[size];
     const tiles = new Uint8Array(W * H).fill(T.WATER);
     const heights = new Float32Array(W * H); // roof height of each building tile
     const set = (x, y, v) => { if (x >= 0 && y >= 0 && x < W && y < H) tiles[y * W + x] = v; };
     const get = (x, y) => (x < 0 || y < 0 || x >= W || y >= H ? T.WATER : tiles[y * W + x]);
-    const L = 4, Hi = W - 5;
+    const L = 4 + SEA, Hi = W - 5 - SEA;
     for (let y = L - 1; y <= Hi + 1; y++) for (let x = L - 1; x <= Hi + 1; x++) set(x, y, T.PAVE);
     function cuts() {
       const N = Hi - L + 1, n = NB, total = N - (n + 1) * 2;
@@ -316,7 +318,7 @@
       const n = [8, 10, 12][size], off = RR() * Math.PI * 2, cx = W / 2, cy = H / 2;
       for (let i = 0; i < n; i++) {
         const a = off + (i / n) * Math.PI * 2, rr = 0.3 + RR() * 0.08;
-        const tx = cx + Math.cos(a) * W * rr, ty = cy + Math.sin(a) * H * rr;
+        const tx = cx + Math.cos(a) * CW * rr, ty = cy + Math.sin(a) * CW * rr;
         let best = null, bd = 1e9;
         for (const t of roadT) { const d = Math.hypot(t[0] - tx, t[1] - ty); if (d < bd) { bd = d; best = t; } }
         if (!best) continue;
@@ -334,6 +336,31 @@
         if (d > sd) { sd = d; sb = p0; }
       }
       race.start = sb;
+      // one checkpoint out at sea, between two street ones, where the course passes closest to the shore: only a boat
+      // counts there. A row of race boats is moored at the nearest bit of shore (the pit), next to a landing where you
+      // leave your car and pick it up again on the way back.
+      race.pit = []; race.land = null;
+      if (race.cps.length >= 3) {
+        const lo = L - 1, hi = Hi + 1, N = race.cps.length; // the pavement along the outer shore
+        let best = null;
+        for (let i = 1; i < N; i++) {
+          const a = race.cps[i], b = race.cps[(i + 1) % N], mx = (a.x + b.x) / 2 / TILE, my = (a.y + b.y) / 2 / TILE;
+          for (const [d, s] of [[my - lo, 0], [hi - my, 1], [mx - lo, 2], [hi - mx, 3]]) if (!best || d < best.d) best = { d, s, i, mx, my };
+        }
+        const s = best.s, nx = [0, 0, -1, 1][s], ny = [-1, 1, 0, 0][s], ax = ny ? 1 : 0, ay = ny ? 0 : 1; // out to sea, along the shore
+        const row = s === 0 || s === 2 ? lo : hi, land = (t) => get(ny ? t : row, ny ? row : t) !== T.WATER;
+        let along = Math.max(L + 3, Math.min(Hi - 3, Math.round(ny ? best.mx : best.my)));
+        // clear of river mouths: dry shore for a few tiles either way
+        const clear = (t) => { for (let k = -3; k <= 3; k++) if (!land(t + k)) return false; return t >= L + 3 && t <= Hi - 3; };
+        for (let k = 0; k < 12 && !clear(along); k++) { if (clear(along + k)) { along += k; break; } if (clear(along - k)) { along -= k; break; } }
+        const C = { x: ((ny ? along : row) + 0.5) * TILE, y: ((ny ? row : along) + 0.5) * TILE }; // the landing, on the shore
+        race.cps.splice(best.i + 1, 0, { x: C.x + nx * 7 * TILE, y: C.y + ny * 7 * TILE, v: ny ? 0 : 1, w: 1 });
+        race.land = C;
+        for (const k of [0, -1, 1, -2, 2, -3, 3, -4]) {
+          const x = C.x + nx * (TILE - 6) + ax * k * 66, y = C.y + ny * (TILE - 6) + ay * k * 66;
+          if (get(Math.floor(x / TILE), Math.floor(y / TILE)) === T.WATER && land(Math.floor((ny ? x : y) / TILE))) race.pit.push({ x, y, a: Math.atan2(ay, ax) });
+        }
+      }
     }
     const dn = S.DISTRICTS.slice();
     for (let i = dn.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [dn[i], dn[j]] = [dn[j], dn[i]]; }

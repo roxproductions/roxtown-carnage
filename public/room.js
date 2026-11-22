@@ -10,6 +10,14 @@
   const clean = (t) => String(t).replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, '').slice(0, 120);
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
+  // ---------------------------------------------------------------- play alerts
+  // The signup page lives on the server version; the relay pushes a phone alert (ntfy) when someone starts playing
+  // online, at most one every 15 minutes, so pinging it on every start is fine. Blocked in some sandboxes: no harm.
+  const ALERTS_PAGE = 'https://roxproductions.se/games/crosstown/alerts.html';
+  const NOTIFY = 'https://worms-relay.roxgamez.workers.dev/notify?game=gta&name=';
+  { const a = document.getElementById('alerts'); if (a) a.href = ALERTS_PAGE; }
+  const notifyPlaying = (name) => { try { fetch(NOTIFY + encodeURIComponent(String(name || '').slice(0, 16)), { mode: 'no-cors' }).catch(() => {}); } catch {} };
+
   // ---------------------------------------------------------------- lobby options
   const optEl = document.getElementById('artopts');
   optEl.hidden = false;
@@ -146,6 +154,7 @@
   function roomTransport(o) {
     const R = room;
     inGame = true;
+    notifyPlaying(o.name);
     const t0 = performance.now();
     let myPeer = null, role = 'none', host = null, noHostSince = performance.now();
     let hiddenSince = document.hidden ? performance.now() : 0;

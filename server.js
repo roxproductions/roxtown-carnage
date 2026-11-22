@@ -97,6 +97,15 @@ process.on('unhandledRejection', (e) => logError('unhandled promise', e));
 const STARTED = Date.now();
 fs.appendFile(LOG, `${new Date().toISOString()} server started (pid ${process.pid})\n`, () => {});
 
+// play alerts: when a human joins, ask the relay to push a phone alert (ntfy) to everyone signed up on alerts.html.
+// The relay sends at most one every 15 minutes. NOTIFY_URL=off turns it off (or points it at another relay).
+const NOTIFY_URL = process.env.NOTIFY_URL || 'https://worms-relay.roxgamez.workers.dev/notify';
+function notifyPlaying(name) {
+  if (/^(off|0|false)$/i.test(NOTIFY_URL) || typeof fetch !== 'function') return;
+  fetch(NOTIFY_URL + '?game=gta&name=' + encodeURIComponent(String(name || '').slice(0, 16)), { signal: AbortSignal.timeout(8000) })
+    .catch((e) => logError('play alert', e));
+}
+
 const wss = new WebSocketServer({ server });
 // keep-alive: a ping every 15 s keeps proxies from closing a quiet line, and a player whose connection died without
 // closing is dropped after 45 s instead of standing in the street forever
@@ -116,6 +125,9 @@ wss.on('connection', (ws) => {
       if (m.t !== 'j') return;
       cityFor(m.o, m.l);
       conn = game.connect(LAG ? (s) => setTimeout(() => out(s), LAG) : out);
+      conn.message(m);
+      if (conn.player) notifyPlaying(conn.player.name);
+      return;
     }
     conn.message(m);
   };
