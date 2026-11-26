@@ -1,0 +1,91 @@
+"""Makes every voice in the game (announcer, people on the street, police) as American Southerners. Writes public/voices.js.
+
+Two steps, each in its own Python environment (the two engines pin different library versions):
+  1. Qwen3-TTS VoiceDesign (Qwen, Apache 2.0) designs each character's voice from a written description and speaks
+     one reference sentence in it:            python3 tools/make_southern_voices.py refs      (pip install qwen-tts)
+  2. Chatterbox TTS (Resemble AI, MIT) speaks every line in that voice, with the emotion turned up for the angry ones
+     and down for the laid-back ones:         python3 tools/make_southern_voices.py lines     (pip install chatterbox-tts)
+The cast and the lines are in tools/southern_lines.py. Clips are cached, so a run that stops picks up where it left
+off. On a CPU, about 30 s a reference and 25 s a line: roughly an hour and a half for everything. Needs ffmpeg.
+Chatterbox adds an inaudible watermark marking the audio as AI generated.
+"""
+import base64, hashlib, json, os, subprocess, sys, tempfile, time
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from southern_lines import ACCENT, HOT, EASY, ANNOUNCER, COP, PEOPLE, ANNOUNCE, COP_LINES
+
+ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..')
+OUT = os.path.join(ROOT, 'public', 'voices.js')
+CACHE = os.environ.get('VOICE_CACHE', os.path.join(ROOT, '.voice-cache'))
+os.makedirs(CACHE, exist_ok=True)
+tmp = tempfile.mkdtemp()
+REF_TEXT = ("Well now, Ah reckon y'all done gone and messed up mah whole dang afternoon. Ah been sittin' out here "
+            "fer an hour, and ain't nobody said a single word to me 'bout it.")
+CAST = [('announcer', ANNOUNCER), ('cop', COP)] + [(n, d) for n, d, _ in PEOPLE]
+
+
+def h(*a):
+    return hashlib.sha1('|'.join(map(str, a)).encode()).hexdigest()[:16]
+
+
+def ref_path(desc):
+    return os.path.join(CACHE, 'ref_' + h(desc, REF_TEXT) + '.wav')
+
+
+if sys.argv[1:] == ['refs']:
+    import torch, soundfile as sf
+    from qwen_tts import Qwen3TTSModel
+    torch.set_num_threads(os.cpu_count())
+    model = Qwen3TTSModel.from_pretrained('Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign', device_map='cpu', dtype=torch.bfloat16, low_cpu_mem_usage=True)
+    for name, desc in CAST:
+        p = ref_path(desc)
+        if os.path.exists(p): continue
+        t0 = time.time(); torch.manual_seed(int(h(desc)[:6], 16))
+        wavs, sr = model.generate_voice_design(text=REF_TEXT, language='English', instruct=desc)
+        sf.write(p, wavs[0], sr)
+        print('ref', name, round(len(wavs[0]) / sr, 1), 's audio,', round(time.time() - t0), 's', flush=True)
+    sys.exit()
+
+if sys.argv[1:] != ['lines']:
+    sys.exit(__doc__)
+
+import torch, torchaudio
+from chatterbox.tts import ChatterboxTTS
+cb = ChatterboxTTS.from_pretrained(device='cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def clip(text, desc, announcer=False):
+    """one line in that character's voice, as base64 mp3 (cached)"""
+    hot = HOT in desc or announcer or desc == COP
+    ex, cfg = (0.85, 0.35) if hot else (0.4, 0.5)
+    cached = os.path.join(CACHE, 'cb_' + h(desc, text, ex, cfg, announcer) + '.mp3')
+    if not os.path.exists(cached):
+        t0 = time.time()
+        for attempt in range(3):  # long silences or a runaway clip mean the model stumbled: try again
+            torch.manual_seed(int(h(desc, text)[:6], 16) + attempt)
+            wav = cb.generate(text, audio_prompt_path=ref_path(desc), exaggeration=ex, cfg_weight=cfg, temperature=0.8)
+            if 0.3 < wav.shape[-1] / cb.sr < 1.5 + len(text) * 0.12: break
+        src = os.path.join(tmp, 'c.wav')
+        torchaudio.save(src, wav, cb.sr)
+        trim = 'silenceremove=start_periods=1:start_threshold=-45dB,areverse,silenceremove=start_periods=1:start_threshold=-45dB,areverse,'
+        if announcer:  # bigger, like an arena PA
+            flt = trim + 'highpass=f=60,equalizer=f=2500:t=q:w=1:g=3,acompressor=threshold=-20dB:ratio=4:attack=5:release=90,'
+        else:
+            flt = trim + 'highpass=f=80,acompressor=threshold=-20dB:ratio=3:attack=5:release=80,'
+        flt += 'loudnorm=I=-14:TP=-1.5:LRA=7'
+        subprocess.run(['ffmpeg', '-v', 'error', '-y', '-i', src, '-af', flt, '-ar', '24000', '-ac', '1', '-c:a', 'libmp3lame', '-b:a', '32k', cached], check=True)
+        print('%4.1f s audio, %3d s  %s' % (wav.shape[-1] / cb.sr, time.time() - t0, text), flush=True)
+    return base64.b64encode(open(cached, 'rb').read()).decode()
+
+
+t0 = time.time()
+data = {'announcer': {k: clip(t, ANNOUNCER, True) for k, t in ANNOUNCE.items()}, 'people': [], 'cop': {}}
+print('announcer done', round(time.time() - t0), 's', flush=True)
+for name, desc, lines in PEOPLE:
+    data['people'].append({kind: [clip(t, desc) for t in ts] for kind, ts in lines.items()})
+    print('person', name, round(time.time() - t0), 's', flush=True)
+data['cop'] = {kind: [clip(t, COP) for t in ts] for kind, ts in COP_LINES.items()}
+js = ('// Generated by tools/make_southern_voices.py: American Southern voices designed with Qwen3-TTS VoiceDesign (Apache 2.0),\n'
+      '// spoken by Chatterbox TTS (Resemble AI, MIT).\n'
+      'window.CC_VOICES = ' + json.dumps(data, separators=(',', ':')) + ';\n')
+open(OUT, 'w').write(js)
+print('wrote', OUT, round(len(js) / 1024), 'KB,', len(data['people']), 'people, in', round((time.time() - t0) / 60), 'min')

@@ -1,7 +1,10 @@
 // RoxTown Carnage — the car fist fight.
-// When two players keep stealing the same car from each other, they settle it with their fists:
-// best of three rounds in a side-on arena, Mortal Kombat style, with combos, special moves and finishing moves.
-// This is the pure simulation (no I/O). game.js runs it authoritatively; clients only draw what they receive.
+// When two players keep stealing the same car from each other, they settle it with their fists: best of three
+// rounds in a side-on arena, played like a classic Street Fighter game. Everything runs on 60 frames a second with
+// frame data for every move: hitstop on every hit, chains and special cancels, motion-input specials, throws, dashes,
+// high/low/overhead blocking, a super meter, and (on the final knockout) a finishing move.
+// This is the pure simulation (no I/O). game.js runs it authoritatively; each fighter's page runs it too, replaying
+// its own keys, so its moves come out the same frame the key goes down.
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) module.exports = factory(require('./shared.js'));
   else factory(root.S);
@@ -9,301 +12,451 @@
   const K = S.K;
   const F = (S.Fight = {});
   const AW = (F.AW = 640); // arena width in fight units; fighters stand about 150 units tall
-  F.ROUND_T = 45; // seconds per round
+  const DTF = 1 / 60;
+  F.ROUND_T = 60; // seconds per round
   F.WINS = 2; // round wins needed
   F.DUEL_AT = 3; // the third steal of the same car between the same two players starts a fight
+  // the four attack buttons (borrowing the key bits the street game uses for other things)
+  const LP = (F.LP = K.FIRE), LK = (F.LK = K.HAND), HP = (F.HP = K.ABS), HK = (F.HK = K.TUR);
+  const PB = LP | HP, KB = LK | HK, BTN = PB | KB;
   const PH = (F.PH = { INTRO: 0, FIGHT: 1, KO: 2, FINISH: 3, FATAL: 4, OVER: 5 });
   const A = (F.A = {
     IDLE: 0, WALK: 1, CROUCH: 2, BLOCK: 3, CBLOCK: 4, JUMP: 5,
-    JAB: 6, KICK: 7, UPPER: 8, SWEEP: 9, JKICK: 10, HUBCAP: 11, KNEE: 12, HEEL: 13,
-    HURT: 14, FALL: 15, DOWN: 16, GETUP: 17, DIZZY: 18, WIN: 19, KO: 20, FIN: 21,
+    LP: 6, HP: 7, LK: 8, HK: 9, CLP: 10, CHP: 11, CLK: 12, CHK: 13, JLP: 14, JHP: 15, JLK: 16, JHK: 17,
+    HUBCAP: 18, RISING: 19, SPIN: 20, SUPER: 21, THROW: 22, THROWN: 23,
+    HURT: 24, FALL: 25, DOWN: 26, GETUP: 27, DIZZY: 28, WIN: 29, KO: 30, FIN: 31,
+    DASH: 32, BDASH: 33, PREJUMP: 34, LAND: 35,
   });
-  // s: startup, a: active, r: recovery (seconds). h: high (whiffs over crouchers) / mid / low (only a crouching block stops it)
+  // Frame data, at 60 frames a second. fs: startup, fa: active, fr: recovery. h: mid / low (block crouching) /
+  // over (block standing). hs / bs: hitstun / blockstun. kb: pushback. stop: hitstop. lvl: 0 light (chains),
+  // 1 heavy, 2 special, 3 super. cancel: can be cancelled into a special on hit or block. aa: how high off the ground
+  // it reaches an airborne opponent. hy: where the hit spark goes.
   const MV = (F.MV = {
-    [A.JAB]: { s: 0.07, a: 0.07, r: 0.13, dmg: 5, reach: 64, h: 'high', kb: 110, stun: 0.36 },
-    [A.KICK]: { s: 0.13, a: 0.08, r: 0.22, dmg: 8, reach: 86, h: 'mid', kb: 190, stun: 0.36 },
-    [A.UPPER]: { s: 0.12, a: 0.08, r: 0.42, dmg: 13, reach: 62, h: 'mid', kb: 200, down: 1, lift: 600, tall: 1 },
-    [A.SWEEP]: { s: 0.12, a: 0.1, r: 0.34, dmg: 8, reach: 92, h: 'low', kb: 70, down: 1, lift: 200 },
-    [A.JKICK]: { s: 0.06, a: 0.6, r: 0, dmg: 9, reach: 74, h: 'high', kb: 180, stun: 0.42, air: 1 },
-    [A.HUBCAP]: { s: 0.24, a: 0.02, r: 0.36, name: 'HUBCAP TOSS' },
-    [A.KNEE]: { s: 0.08, a: 0.26, r: 0.3, dmg: 12, reach: 52, h: 'mid', kb: 320, down: 1, lift: 320, dash: 560, name: 'FLYING KNEE' },
-    [A.HEEL]: { s: 0.16, a: 0.12, r: 0.38, dmg: 13, reach: 96, h: 'high', kb: 360, down: 1, lift: 260, name: 'SPIN HEEL' },
+    [A.LP]: { fs: 3, fa: 2, fr: 7, dmg: 5, reach: 74, hs: 16, bs: 10, kb: 150, stop: 7, lvl: 0, cancel: 1, aa: 60, hy: 122 },
+    [A.HP]: { fs: 6, fa: 3, fr: 17, dmg: 12, reach: 94, hs: 21, bs: 15, kb: 240, stop: 11, lvl: 1, cancel: 1, aa: 70, hy: 120 },
+    [A.LK]: { fs: 4, fa: 3, fr: 9, dmg: 6, reach: 88, hs: 16, bs: 11, kb: 170, stop: 7, lvl: 0, cancel: 1, aa: 50, hy: 82 },
+    [A.HK]: { fs: 9, fa: 4, fr: 19, dmg: 13, reach: 112, hs: 22, bs: 15, kb: 290, stop: 12, lvl: 1, aa: 90, hy: 112 },
+    [A.CLP]: { fs: 3, fa: 2, fr: 6, dmg: 4, reach: 72, hs: 15, bs: 9, kb: 130, stop: 6, lvl: 0, cancel: 1, aa: 30, hy: 74 },
+    [A.CHP]: { fs: 5, fa: 5, fr: 19, dmg: 12, reach: 74, hs: 21, bs: 14, kb: 200, stop: 11, lvl: 1, cancel: 1, aa: 175, hy: 135, name: 0 },
+    [A.CLK]: { fs: 4, fa: 3, fr: 8, dmg: 5, reach: 92, h: 'low', hs: 17, bs: 10, kb: 150, stop: 6, lvl: 0, cancel: 1, aa: 0, hy: 16 },
+    [A.CHK]: { fs: 7, fa: 5, fr: 24, dmg: 11, reach: 116, h: 'low', down: 1, lift: 200, bs: 14, kb: 160, stop: 11, lvl: 1, aa: 0, hy: 16 },
+    [A.JLP]: { fs: 3, fa: 8, fr: 0, dmg: 6, reach: 76, h: 'over', hs: 16, bs: 10, kb: 150, stop: 8, lvl: 0, air: 1, hy: 125 },
+    [A.JHP]: { fs: 6, fa: 6, fr: 0, dmg: 12, reach: 90, h: 'over', hs: 21, bs: 14, kb: 210, stop: 11, lvl: 1, air: 1, hy: 120 },
+    [A.JLK]: { fs: 4, fa: 10, fr: 0, dmg: 7, reach: 86, h: 'over', hs: 16, bs: 10, kb: 160, stop: 8, lvl: 0, air: 1, hy: 100 },
+    [A.JHK]: { fs: 7, fa: 6, fr: 0, dmg: 13, reach: 102, h: 'over', hs: 22, bs: 15, kb: 230, stop: 12, lvl: 1, air: 1, hy: 100 },
+    [A.HUBCAP]: { fs: 10, fa: 2, fr: 24, lvl: 2, name: 'HUBCAP TOSS' },
+    [A.RISING]: { fs: 3, fa: 12, fr: 0, dmg: 15, reach: 70, aa: 240, down: 1, lift: 640, kb: 200, bs: 16, stop: 13, lvl: 2, hy: 140, name: 'RISING FIST' },
+    [A.SPIN]: { fs: 6, fa: 30, fr: 12, dmg: 6, reach: 86, aa: 80, hs: 18, bs: 12, kb: 120, stop: 7, lvl: 2, hy: 110, name: 'TIRE SPIN KICK' },
+    [A.SUPER]: { fs: 6, fa: 24, fr: 24, dmg: 6, reach: 72, aa: 60, hs: 30, bs: 14, kb: 60, stop: 6, lvl: 3, hy: 115, name: 'CARJACK RUSH' },
+    [A.THROW]: { fs: 3, fa: 1, fr: 30, reach: 78, lvl: 1 },
   });
-  F.DMG = 1.35; // overall damage scale: a round lasts about half a minute
-  F.HUBCAP = { dmg: 10, speed: 430, kb: 220, stun: 0.45 };
+  for (const m of Object.values(MV)) { m.s = m.fs / 60; m.a = m.fa / 60; m.r = m.fr / 60; } // in seconds, for drawing
+  const HUB = [{ dmg: 9, h: 'mid', hs: 20, bs: 14, kb: 200, stop: 9, lvl: 2, speed: 300 }, { dmg: 11, h: 'mid', hs: 22, bs: 15, kb: 230, stop: 10, lvl: 2, speed: 470 }];
+  const THROWMV = { dmg: 16, down: 1, lift: 560, kb: 560, stop: 14, lvl: 1 }; // released hard: they sail most of the way across the arena
+  const GRABF = 20; // frames from grab to release
+  const RUSHMV = { dmg: 5, hs: 34, kb: 30, stop: 4, lvl: 3 }, RUSHEND = { dmg: 12, down: 1, lift: 600, kb: 320, stop: 24, lvl: 3 };
+  F.DMG = 1;
   F.COMBOS = ['', 'STREET COMBO', 'CARJACKER COMBO', 'ROAD RAGE'];
   F.FATALS = ['', 'CAR CRUSH', 'SKY HIGH', 'FIRE STARTER'];
   F.FATAL_T = 3.4;
-  const NAMED = [
-    // [moves in order, name index, bonus damage]
-    [[A.JAB, A.JAB, A.KICK], 1, 5],
-    [[A.JAB, A.KICK, A.UPPER], 2, 7],
-    [[A.KICK, A.KICK, A.HEEL], 3, 8],
-  ];
+  const GRAV = 2000, JUMP_V = 690, WALK_F = 175, WALK_B = 140;
+  const KBG = Math.exp(-10 / 60), KBA = Math.exp(-2 / 60);
 
-  function fighter(x, face) {
-    return {
-      x, y: 0, vx: 0, vy: 0, kbx: 0, face, hp: 100, act: A.IDLE, at: 0, air: false, jk: false,
-      pk: 0, hist: [], buf: null, held: { F: 0, B: 0, D: 0, U: 0 }, hitDone: false, stun: 0, bs: 0,
-      combo: 0, cn: 0, chain: [], lastHitT: -9, proj: null, taken: 0, thrown: false,
-    };
+  // every number a fighter or a fight carries (all plain numbers, so the state saves and loads exactly)
+  const FK = ['x', 'y', 'vx', 'vy', 'kbx', 'face', 'hp', 'act', 'at', 'fr', 'air', 'jk', 'hitDone', 'conn', 'stun', 'combo', 'cn', 'lastHit', 'taken',
+    'meter', 'hits', 'inv', 'str', 'pk', 'dir', 'bufB', 'bufF', 'bufD', 'dq', 'jdir', 'lag', 'grab', 'back', 'rush', 'rf', 'pOn', 'px', 'pvx', 'pstr'];
+  const DK = ['ph', 't', 'clock', 'af', 'round', 'rt', 'win', 'rw', 'fk', 'flaw', 'res', 'hs', 'frz', 'sf', 'done', 'w0', 'w1', 'lh0', 'lh1', 'lh2', 'lh3'];
+
+  function fighter(x, face, meter) {
+    const f = { dirs: [] };
+    for (const k of FK) f[k] = 0;
+    Object.assign(f, { x, face, hp: 100, act: A.IDLE, dir: 5, lastHit: -999, meter: meter || 0 });
+    return f;
   }
   F.create = function (id) {
-    const d = { id, ph: PH.INTRO, t: 0, clock: 0, round: 1, wins: [0, 0], rt: F.ROUND_T, f: null, win: -1, rw: -1, fk: 0, flaw: 0, res: 0, hs: 0, lh: [0, 0, 0], done: false };
+    const d = { id };
+    for (const k of DK) d[k] = 0;
+    Object.assign(d, { round: 1, rt: F.ROUND_T, win: -1, rw: -1, lh0: -1 });
+    d.wins = [0, 0]; d.lh = [-1, 0, 0, 0];
+    d.f = [fighter(0, 1), fighter(0, -1)];
     resetRound(d);
     return d;
   };
   function resetRound(d) {
-    d.f = [fighter(AW / 2 - 130, 1), fighter(AW / 2 + 130, -1)];
-    d.rt = F.ROUND_T; d.ph = PH.INTRO; d.t = 0; d.rw = -1; d.flaw = 0;
+    d.f = [fighter(AW / 2 - 120, 1, d.f[0].meter), fighter(AW / 2 + 120, -1, d.f[1].meter)];
+    d.rt = F.ROUND_T; d.ph = PH.INTRO; d.t = 0; d.rw = -1; d.flaw = 0; d.frz = 0; d.sf = 0;
   }
+  F.wins = (d) => [d.w0, d.w1];
 
-  const neutral = (f) => f.act <= A.JUMP && f.act !== A.JUMP;
-  const invuln = (f) => f.act === A.DOWN || f.act === A.GETUP || f.act === A.KO || (f.act === A.FALL && !(f.air && f.at < 0.45));
+  const isNeutral = (f) => f.act === A.IDLE || f.act === A.WALK || f.act === A.CROUCH || ((f.act === A.BLOCK || f.act === A.CBLOCK) && f.stun <= 0);
+  const untouchable = (f) => f.inv > 0 || f.act === A.DOWN || f.act === A.GETUP || f.act === A.KO || f.act === A.FALL || f.act === A.THROWN;
+  // which way a fighter is holding, in numpad notation relative to the way they face (6 = forward, 2 = down...)
+  function dirOf(f, k) {
+    const fw = f.face > 0 ? K.RIGHT : K.LEFT, bk = f.face > 0 ? K.LEFT : K.RIGHT;
+    const h = k & fw && !(k & bk) ? 1 : k & bk && !(k & fw) ? -1 : 0, v = k & K.UP && !(k & K.DOWN) ? 3 : k & K.DOWN && !(k & K.UP) ? -3 : 0;
+    return 5 + h + v;
+  }
+  // a motion (like 2 3 6) done within the last n frames, ending at the direction held now
+  function motion(d, f, seq, n) {
+    let j = seq.length - 1;
+    for (let i = f.dirs.length - 1; i >= 0 && j >= 0; i--) {
+      const [dr, t] = f.dirs[i];
+      if (d.af - t > n) break;
+      if (dr === seq[j]) j--;
+    }
+    return j < 0;
+  }
   function threat(d, i) {
     const o = d.f[1 - i], f = d.f[i];
-    if (o.proj && Math.sign(f.x - o.proj.x) === Math.sign(o.proj.vx) && Math.abs(f.x - o.proj.x) < 260) return true;
+    if (o.pOn && Math.sign(f.x - o.px) === Math.sign(o.pvx) && Math.abs(f.x - o.px) < 240) return true;
     const mv = MV[o.act];
-    return !!(mv && Math.abs(o.x - f.x) < 190 && o.at < mv.s + mv.a);
+    return !!(mv && mv.dmg && Math.abs(o.x - f.x) < 200 && o.fr < mv.fs + mv.fa);
   }
 
   // ---------------------------------------------------------------- input
-  function control(d, i, k, live) {
+  function input(d, i, k, live) {
     const f = d.f[i];
     const prev = f.pk; f.pk = k;
-    if (!live) { f.held = { F: 0, B: 0, D: 0, U: 0 }; f.buf = null; return; }
-    const fwdK = f.face > 0 ? K.RIGHT : K.LEFT, backK = f.face > 0 ? K.LEFT : K.RIGHT;
-    const press = (b) => k & b && !(prev & b);
-    const T = d.clock;
-    if (press(fwdK)) f.hist.push(['F', T]);
-    if (press(backK)) f.hist.push(['B', T]);
-    if (press(K.DOWN)) f.hist.push(['D', T]);
-    if (press(K.UP)) f.hist.push(['U', T]);
-    while (f.hist.length > 8) f.hist.shift();
-    f.held = { F: k & fwdK ? 1 : 0, B: k & backK ? 1 : 0, D: k & K.DOWN ? 1 : 0, U: k & K.UP ? 1 : 0 };
-    const btn = press(K.FIRE) ? 'P' : press(K.HAND) ? 'K' : null;
-    if (btn) f.buf = { b: btn, t: T, m: f.hist.filter((h) => T - h[1] < 0.7).map((h) => h[0]).join('') };
-    if (f.buf && T - f.buf.t > 0.18) f.buf = null;
+    if (!live) { f.bufB = 0; f.dq = 0; return; }
+    const dr = dirOf(f, k);
+    if (dr !== f.dir) {
+      f.dir = dr; f.dirs.push([dr, d.af]);
+      if (f.dirs.length > 16) f.dirs.shift();
+      // a quick double tap forward or back: a dash
+      const n = f.dirs.length;
+      if ((dr === 6 || dr === 4) && n >= 3 && f.dirs[n - 2][0] === 5 && f.dirs[n - 3][0] === dr && d.af - f.dirs[n - 3][1] <= 14) f.dq = dr === 6 ? 1 : -1;
+    }
+    const pressed = k & ~prev & BTN;
+    if (pressed) { f.bufB = (d.af - f.bufF <= 2 ? f.bufB : 0) | pressed; f.bufF = d.af; f.bufD = dr; } // with the direction held as it went down // two buttons a frame or two apart count as together
+    if (f.bufB && d.af - f.bufF > 7) f.bufB = 0; // a press waits up to 7 frames for its chance (so it comes out the moment you can act)
+    if (f.dq && (!f.dirs.length || d.af - f.dirs[f.dirs.length - 1][1] > 6)) f.dq = 0;
   }
-  function begin(f, act) {
-    f.act = act; f.at = 0; f.hitDone = false; f.thrown = false;
+  function begin(f, act, str) {
+    f.act = act; f.fr = 0; f.at = 0; f.hitDone = 0; f.conn = 0; f.hits = 0; f.str = str | 0; f.grab = 0; f.rush = 0; f.rf = 0;
     if (!f.air) f.vx = 0;
   }
-  function tryAttack(d, i) {
-    const f = d.f[i], o = d.f[1 - i], b = f.buf;
-    if (!b) return;
-    const m = b.m, dist = Math.abs(o.x - f.x);
-    if (d.ph === PH.FINISH && i === d.win) {
+  const throwable = (o) => !o.air && o.inv <= 0 && !untouchable(o) && o.act !== A.HURT && !((o.act === A.BLOCK || o.act === A.CBLOCK) && o.stun > 0) && o.act !== A.DIZZY;
+  function tryAct(d, i) {
+    const f = d.f[i], o = d.f[1 - i], b = f.bufB;
+    if (d.ph === PH.FINISH && i === d.win && b) {
+      const dist = Math.abs(o.x - f.x);
       let fk = 0;
-      if (b.b === 'K' && m.endsWith('BB')) fk = 1;
-      else if (b.b === 'P' && m.endsWith('DU') && dist < 140) fk = 2;
-      else if (b.b === 'P' && m.endsWith('FBF') && dist < 280) fk = 3;
-      if (fk) { f.buf = null; d.fk = fk; d.ph = PH.FATAL; d.t = 0; f.act = A.FIN; f.at = 0; f.vx = 0; f.kbx = 0; return; }
+      if (b & KB && motion(d, f, [4, 5, 4], 30)) fk = 1;
+      else if (b & PB && motion(d, f, [2, 8], 30) && dist < 150) fk = 2;
+      else if (b & PB && motion(d, f, [6, 4, 6], 40) && dist < 290) fk = 3;
+      if (fk) { f.bufB = 0; d.fk = fk; d.ph = PH.FATAL; d.t = 0; f.act = A.FIN; f.at = 0; f.fr = 0; f.vx = 0; f.kbx = 0; f.air = 0; f.y = 0; f.vy = 0; return; }
     }
+    const mv = MV[f.act], neutral = isNeutral(f) && !f.air;
+    // a dash
+    if (f.dq && neutral && d.ph === PH.FIGHT) { begin(f, f.dq > 0 ? A.DASH : A.BDASH); if (f.dq < 0) f.inv = 7; f.dq = 0; f.bufB = 0; return; }
+    if (!b) return;
     if (f.air) {
-      if (f.jk || f.act !== A.JUMP) return;
-      f.jk = true; f.buf = null; f.act = A.JKICK; f.at = 0; f.hitDone = false;
+      if (f.act !== A.JUMP || f.jk) return;
+      f.jk = 1; f.bufB = 0;
+      begin(f, b & HP ? A.JHP : b & HK ? A.JHK : b & LP ? A.JLP : A.JLK);
       return;
     }
-    if (!neutral(f)) return; // stays buffered for a moment, so moves chain into combos
-    let act;
-    if (b.b === 'P' && m.endsWith('BF') && !f.proj) act = A.HUBCAP;
-    else if (b.b === 'K' && m.endsWith('FF')) act = A.KNEE;
-    else if (b.b === 'K' && m.endsWith('DB')) act = A.HEEL;
-    else if (f.held.D) act = b.b === 'P' ? A.UPPER : A.SWEEP;
-    else act = b.b === 'P' ? A.JAB : A.KICK;
-    f.buf = null;
+    const canCancel = mv && mv.cancel && f.conn && f.fr <= mv.fs + mv.fa + 10;
+    const canChain = canCancel && mv.lvl === 0 && f.fr >= mv.fs;
+    if (!neutral && !canCancel) return; // stays buffered: comes out the first frame you can move
+    const P = b & PB, Kk = b & KB, dr = f.bufD || f.dir, str = b & (HP | HK) ? 1 : 0;
+    // specials first (the super, then the uppercut, the hubcap, the spin kick), from standing or cancelled out of a hit
+    if (P && f.meter >= 100 && (dr === 6 || dr === 3) && (motion(d, f, [2, 3, 6, 2, 3, 6], 36) || motion(d, f, [2, 3, 6, 3, 6], 36))) {
+      f.bufB = 0; begin(f, A.SUPER, 1); f.meter -= 100; f.inv = MV[A.SUPER].fs + MV[A.SUPER].fa; d.frz = 30; d.sf = i + 1; return;
+    }
+    if (P && dr === 3 && motion(d, f, [6, 2, 3], 16)) {
+      f.bufB = 0; begin(f, A.RISING, str); f.inv = str ? 9 : 5; f.air = 1; f.vy = str ? 760 : 620; f.vx = f.face * (str ? 110 : 70); return;
+    }
+    if (P && dr === 6 && !f.pOn && motion(d, f, [2, 3, 6], 16)) { f.bufB = 0; begin(f, A.HUBCAP, str); return; }
+    if (Kk && dr === 4 && motion(d, f, [2, 1, 4], 16)) { f.bufB = 0; begin(f, A.SPIN, str); return; }
+    if (!neutral && !canChain) return;
+    // a throw: close in, heavy punch towards or away from them (or light punch + light kick together)
+    if (neutral && Math.abs(o.x - f.x) < MV[A.THROW].reach && throwable(o) && d.ph === PH.FIGHT && ((b & HP && (dr === 6 || dr === 4)) || (b & (LP | LK)) === (LP | LK))) {
+      f.bufB = 0; begin(f, A.THROW); f.back = dr === 4 ? 1 : 0; return;
+    }
+    // normals: crouching if holding down
+    const cr = dr <= 3;
+    const act = b & HP ? (cr ? A.CHP : A.HP) : b & HK ? (cr ? A.CHK : A.HK) : b & LP ? (cr ? A.CLP : A.LP) : cr ? A.CLK : A.LK;
+    f.bufB = 0;
     begin(f, act);
   }
 
   // ---------------------------------------------------------------- hits
-  function hit(d, i, mv, act, isProj) {
+  function push(d, i, o, dir, kb, proj) {
+    o.kbx = dir * kb;
+    const f = d.f[i];
+    if (!proj && !f.air && ((o.x < 46 && dir < 0) || (o.x > AW - 46 && dir > 0))) f.kbx = -dir * kb * 0.85; // up against the wall: the attacker gets pushed back instead
+  }
+  // returns true if it hit, false if it was blocked
+  function hit(d, i, mv, act, srcX) {
     const f = d.f[i], o = d.f[1 - i];
-    const dir = isProj ? Math.sign(f.proj.vx) : f.face;
-    const canBlock = !o.air && (neutral(o) || o.bs > 0) && o.act !== A.DIZZY;
-    const blocking = canBlock && o.held.B && (o.held.D || mv.h !== 'low');
+    const dir = o.x >= srcX ? 1 : -1;
+    const awayK = dir > 0 ? K.RIGHT : K.LEFT, towardK = dir > 0 ? K.LEFT : K.RIGHT;
+    const holdBack = (o.pk & awayK) && !(o.pk & towardK), crouching = !!(o.pk & K.DOWN) && !(o.pk & K.UP);
+    const canBlock = !o.air && (isNeutral(o) || o.act === A.BLOCK || o.act === A.CBLOCK) && d.ph === PH.FIGHT;
+    const blocked = canBlock && holdBack && (mv.h === 'low' ? crouching : mv.h === 'over' ? !crouching : true);
     d.hs++;
-    if (blocking) {
-      const chip = mv.dmg * 0.15;
+    if (blocked) {
+      const chip = mv.lvl >= 2 ? mv.dmg * 0.2 : 0;
       o.hp = Math.max(1, o.hp - chip); o.taken += chip;
-      o.act = o.held.D ? A.CBLOCK : A.BLOCK; o.bs = 0.18; o.at = 0; o.vx = 0; o.kbx = dir * mv.kb * 0.6;
-      f.combo = 0; f.chain = [];
-      d.lh = [2 - i, Math.round(chip), 1, act];
-      return;
+      o.act = crouching ? A.CBLOCK : A.BLOCK; o.fr = 0; o.at = 0; o.stun = mv.bs || 12; o.vx = 0;
+      push(d, i, o, dir, (mv.kb || 150) * 0.9, srcX !== f.x);
+      f.meter = Math.min(100, f.meter + 2); o.meter = Math.min(100, o.meter + 1);
+      d.frz = Math.max(d.frz, (mv.stop || 8) - 2);
+      d.lh0 = 1 - i; d.lh1 = Math.round(chip); d.lh2 = 1; d.lh3 = act;
+      f.combo = 0;
+      return false;
     }
-    const chain = (o.act === A.HURT || (o.act === A.FALL && o.air) || o.act === A.DIZZY) && d.clock - f.lastHitT < 1.3;
+    const chain = (o.act === A.HURT || o.act === A.FALL || o.act === A.THROWN) && d.af - f.lastHit < 100;
     f.combo = chain ? f.combo + 1 : 1;
-    f.chain = chain ? f.chain.concat(act).slice(-4) : [act];
-    f.lastHitT = d.clock; f.cn = 0;
-    let dmg = mv.dmg * F.DMG + Math.max(0, f.combo - 2) * 1.5, named = false;
-    for (const [seq, n, bonus] of NAMED) {
-      if (f.chain.length >= seq.length && seq.every((a, j) => f.chain[f.chain.length - seq.length + j] === a)) { f.cn = n; dmg += bonus; named = true; }
-    }
+    if (!chain) f.cn = 0;
+    f.lastHit = d.af;
+    const dmg = mv.dmg * F.DMG * Math.max(0.4, 1 - 0.1 * (f.combo - 1)); // later hits of a combo do less
     o.hp = Math.max(0, o.hp - dmg); o.taken += dmg;
-    d.lh = [2 - i, Math.round(dmg), 0, act];
+    f.meter = Math.min(100, f.meter + mv.dmg * 1.1 + 2); o.meter = Math.min(100, o.meter + mv.dmg * 0.5);
+    const cn = f.combo >= 8 ? 3 : f.combo >= 6 ? 2 : f.combo >= 4 ? 1 : 0;
+    if (cn > f.cn) f.cn = cn;
+    d.lh0 = 1 - i; d.lh1 = Math.round(dmg); d.lh2 = 0; d.lh3 = act;
+    d.frz = Math.max(d.frz, mv.stop || 10);
     o.vx = 0;
     if (o.act === A.DIZZY) {
-      // the beaten fighter goes down: no fatality this time
-      o.act = A.FALL; o.at = 0; o.air = true; o.vy = 380; o.kbx = dir * 260;
+      // the beaten fighter goes down: no finishing move this time
+      o.act = A.FALL; o.fr = 0; o.at = 0; o.air = 1; o.vy = 420; o.kbx = dir * 260;
       d.res = 1; d.ph = PH.OVER; d.t = 0;
-      return;
+      return true;
     }
-    if (mv.down || named || o.hp <= 0 || o.air) {
-      o.act = A.FALL; o.at = 0; o.air = true; o.vy = Math.max(mv.lift || 0, o.hp <= 0 ? 420 : 300); o.kbx = dir * Math.max(mv.kb, 220);
+    if (mv.down || o.air || o.hp <= 0) {
+      o.act = A.FALL; o.fr = 0; o.at = 0; o.air = 1; o.stun = 0; o.vy = Math.max(mv.lift || 0, o.hp <= 0 ? 460 : 340); o.kbx = dir * Math.max(mv.kb || 0, 200);
     } else {
-      o.act = A.HURT; o.at = 0; o.stun = mv.stun || 0.4; o.kbx = dir * mv.kb;
+      o.act = A.HURT; o.fr = 0; o.at = 0; o.stun = mv.hs || 16;
+      push(d, i, o, dir, mv.kb || 150, srcX !== f.x);
     }
-    if (o.hp <= 0) ko(d, i);
+    if (o.hp <= 0) { d.frz = 42; ko(d, i); }
+    return true;
   }
   function ko(d, wi) {
     const w = d.f[wi], l = d.f[1 - wi];
-    d.wins[wi]++; d.rw = wi; d.flaw = w.taken < 0.5 ? 1 : 0;
-    w.proj = null; l.proj = null;
-    if (d.wins[wi] >= F.WINS) {
+    if (wi) d.w1++; else d.w0++;
+    d.rw = wi; d.flaw = w.taken < 0.5 ? 1 : 0;
+    w.pOn = 0; l.pOn = 0;
+    if ((wi ? d.w1 : d.w0) >= F.WINS) {
       // final knockout: the loser staggers back up, dazed, and the winner gets the chance to finish it
       d.win = wi; d.ph = PH.FINISH; d.t = 0;
-      l.act = A.DIZZY; l.at = 0; l.air = false; l.y = 0; l.vy = 0; l.hp = 0;
+      l.act = A.DIZZY; l.fr = 0; l.at = 0; l.air = 0; l.y = 0; l.vy = 0; l.hp = 0; l.kbx = 0;
     } else { d.ph = PH.KO; d.t = 0; }
   }
   function checkHit(d, i) {
     const f = d.f[i], o = d.f[1 - i], mv = MV[f.act];
-    if (!mv || !mv.dmg || f.hitDone) return;
-    if (f.at < mv.s || f.at > mv.s + mv.a) return;
-    if (invuln(o)) return;
+    if (!mv || !mv.dmg || f.hitDone || f.rush) return;
+    if (f.fr < mv.fs || f.fr >= mv.fs + mv.fa) return;
+    if (untouchable(o)) return;
     const dx = (o.x - f.x) * f.face;
-    if (dx < -10 || dx > mv.reach + 24) return;
-    const dy = o.y - f.y;
-    if (dy > (mv.tall ? 150 : mv.air ? 110 : 70) || dy < -95) return;
-    if (mv.h === 'high' && !o.air && (o.act === A.CROUCH || o.act === A.CBLOCK)) return; // goes over a crouching head
-    f.hitDone = true;
-    hit(d, i, mv, f.act, false);
+    if (dx < -8 || dx > mv.reach) return;
+    if (mv.air) { if (f.y > 126 || Math.abs(o.y - f.y) > 95) return; }
+    else if (o.y > (mv.aa || 40) + (f.y || 0)) return;
+    f.hitDone = 1; f.conn = 1;
+    const landed = hit(d, i, mv, f.act, f.x);
+    if (f.act === A.SUPER) {
+      f.vx = 0;
+      if (landed && o.hp > 0) { f.rush = 1; f.rf = 0; f.hits = 1; } // locked in: the rush plays out
+      else f.fr = mv.fs + mv.fa; // blocked: straight into recovery
+    }
   }
 
   // ---------------------------------------------------------------- per-fighter update
-  function update(d, i, dt, live) {
+  function update(d, i, live) {
     const f = d.f[i], o = d.f[1 - i];
-    f.at += dt;
-    if (f.bs > 0) f.bs -= dt;
-    if (live) tryAttack(d, i);
+    f.fr++; f.at += DTF;
+    if (f.inv > 0) f.inv--;
+    if (f.stun > 0) {
+      f.stun--;
+      if (f.stun <= 0 && (f.act === A.HURT || f.act === A.BLOCK || f.act === A.CBLOCK)) { f.act = A.IDLE; f.fr = 0; f.at = 0; }
+    }
+    if (live) tryAct(d, i);
+    // standing about: walk, crouch, guard, jump
+    if (!f.air && isNeutral(f)) {
+      if (o.act !== A.THROWN && !o.air) f.face = o.x >= f.x ? 1 : -1;
+      const dr = live ? dirOf(f, f.pk) : 5;
+      let act = A.IDLE, vx = 0;
+      if (dr >= 7 && d.ph === PH.FIGHT) { begin(f, A.PREJUMP); f.jdir = dr === 9 ? 1 : dr === 7 ? -1 : 0; }
+      else {
+        if (dr <= 3) act = dr === 1 && threat(d, i) ? A.CBLOCK : A.CROUCH;
+        else if (dr === 6) { act = A.WALK; vx = WALK_F * f.face; }
+        else if (dr === 4) { if (threat(d, i)) act = A.BLOCK; else { act = A.WALK; vx = -WALK_B * f.face; } }
+        if (f.act !== act) { f.act = act; f.fr = 0; f.at = 0; }
+        f.vx = vx;
+      }
+    }
     const mv = MV[f.act];
-    // movement from held directions
-    if (!f.air && (neutral(f) && f.bs <= 0)) {
-      f.face = o.x >= f.x ? 1 : -1;
-      if (live && f.held.U && d.ph === PH.FIGHT) {
-        f.act = A.JUMP; f.at = 0; f.air = true; f.jk = false; f.vy = 560;
-        f.vx = f.held.F ? 200 * f.face : f.held.B ? -180 * f.face : 0;
-      } else if (live && f.held.D) { f.act = f.held.B ? A.CBLOCK : A.CROUCH; f.vx = 0; }
-      else if (live && f.held.F) { f.act = A.WALK; f.vx = 150 * f.face; }
-      else if (live && f.held.B) { const blk = threat(d, i); f.act = blk ? A.BLOCK : A.WALK; f.vx = blk ? 0 : -120 * f.face; }
-      else { f.act = A.IDLE; f.vx = 0; }
+    switch (f.act) {
+      case A.PREJUMP:
+        if (f.fr >= 4) { f.act = A.JUMP; f.fr = 0; f.at = 0; f.air = 1; f.jk = 0; f.vy = JUMP_V; f.vx = f.jdir * 205 * f.face; }
+        break;
+      case A.DASH: f.vx = f.fr < 13 ? 330 * f.face : 0; if (f.fr >= 18) { f.act = A.IDLE; f.fr = 0; } break;
+      case A.BDASH: f.vx = f.fr < 12 ? -330 * f.face : 0; if (f.fr >= 21) { f.act = A.IDLE; f.fr = 0; } break;
+      case A.LAND: if (f.fr >= f.lag) { f.act = A.IDLE; f.fr = 0; f.at = 0; } break;
+      case A.GETUP: if (f.fr >= 14) { f.act = A.IDLE; f.fr = 0; f.at = 0; } break;
+      case A.DOWN:
+        f.vx = 0;
+        if (f.fr >= 32) { if (f.hp > 0) { f.act = A.GETUP; f.fr = 0; f.at = 0; f.inv = 16; } else { f.act = A.KO; f.fr = 0; f.at = 0; } }
+        break;
+      case A.THROW:
+        if (f.fr === mv.fs) {
+          if (Math.abs(o.x - f.x) < mv.reach && throwable(o)) { f.grab = 1; o.act = A.THROWN; o.fr = 0; o.at = 0; o.vx = 0; o.kbx = 0; o.pOn = o.pOn; }
+        }
+        if (f.grab) {
+          // the victim is hauled up off their feet and swung along a curve: up onto the shoulder and flung out in
+          // front, or (back throw) right over the thrower's head and slammed down behind
+          const k = Math.min(1, (f.fr - mv.fs) / GRABF), e = k * k * (3 - 2 * k);
+          const P0 = [44, 8], P1 = f.back ? [0, 230] : [-6, 190], P2 = f.back ? [-66, 70] : [72, 92];
+          const bx = (1 - e) * (1 - e) * P0[0] + 2 * (1 - e) * e * P1[0] + e * e * P2[0];
+          const by = (1 - e) * (1 - e) * P0[1] + 2 * (1 - e) * e * P1[1] + e * e * P2[1];
+          o.x = Math.max(30, Math.min(AW - 30, f.x + f.face * bx)); o.y = by; o.jk = f.back ? 2 : 1;
+          if (f.fr === mv.fs + GRABF) {
+            f.grab = 0; o.jk = 0;
+            hit(d, i, THROWMV, A.THROW, f.x); // flies off (FALL, in the air from this height), lands hard (DOWN)
+            if (f.back) f.face = -f.face;
+          }
+        }
+        if (f.fr >= mv.fs + mv.fa + mv.fr) { f.act = A.IDLE; f.fr = 0; f.at = 0; }
+        break;
+      case A.HUBCAP:
+        if (f.fr === mv.fs) { const h = HUB[f.str]; f.pOn = 1; f.pstr = f.str; f.px = f.x + f.face * 44; f.pvx = h.speed * f.face; }
+        if (f.fr >= mv.fs + mv.fa + mv.fr) { f.act = A.IDLE; f.fr = 0; f.at = 0; }
+        break;
+      case A.RISING:
+        checkHit(d, i);
+        break; // ends when it lands
+      case A.SPIN:
+        if (f.fr >= mv.fs && f.fr < mv.fs + (f.str ? mv.fa : 20)) {
+          f.vx = (f.str ? 250 : 200) * f.face; f.y = 26;
+          if ((f.fr - mv.fs) % 9 === 0 && f.hits < (f.str ? 3 : 2)) { f.hitDone = 0; }
+          if (!f.hitDone) {
+            const before = d.hs;
+            checkHit(d, i);
+            if (d.hs !== before) f.hits++;
+          }
+        } else if (f.fr >= mv.fs) { f.vx = 0; f.y = 0; if (f.fr >= mv.fs + mv.fa + mv.fr) { f.act = A.IDLE; f.fr = 0; f.at = 0; } }
+        break;
+      case A.SUPER:
+        if (f.rush) {
+          // the rush: a flurry of blows, then one that sends them flying
+          f.rf++; f.vx = 0;
+          o.x = f.x + f.face * 62; o.stun = 30;
+          if (f.rf % 6 === 0) {
+            if (f.hits < 6) { hit(d, i, RUSHMV, A.SUPER, f.x); f.hits++; }
+            else { hit(d, i, RUSHEND, A.SUPER, f.x); f.rush = 0; f.fr = mv.fs + mv.fa; }
+          }
+        } else {
+          if (f.fr >= mv.fs && f.fr < mv.fs + mv.fa) f.vx = 470 * f.face; else f.vx = 0;
+          checkHit(d, i);
+          if (!f.rush && f.fr >= mv.fs + mv.fa + mv.fr) { f.act = A.IDLE; f.fr = 0; f.at = 0; }
+        }
+        break;
+      default:
+        if (mv && mv.dmg) {
+          checkHit(d, i);
+          if (mv.air) { if (f.fr >= mv.fs + mv.fa) { f.act = A.JUMP; } } // the pose holds till you land; no second attack
+          else if (f.fr >= mv.fs + mv.fa + mv.fr) { f.act = A.IDLE; f.fr = 0; f.at = 0; }
+        }
     }
-    // timed actions
-    if (mv) {
-      if (f.act === A.KNEE) f.vx = f.at > mv.s && f.at < mv.s + mv.a ? mv.dash * f.face : 0;
-      if (f.act === A.HUBCAP && !f.thrown && f.at >= mv.s) {
-        f.thrown = true;
-        f.proj = { x: f.x + f.face * 40, y: 104, vx: F.HUBCAP.speed * f.face, t: 0 };
-      }
-      if (f.act === A.JKICK) { if (!f.air) { f.act = A.IDLE; f.at = 0; } }
-      else if (f.at >= mv.s + mv.a + mv.r) { f.act = f.air ? A.JUMP : A.IDLE; f.at = 0; f.vx = f.air ? f.vx : 0; }
-      checkHit(d, i);
-    } else if (f.act === A.HURT && f.at >= f.stun) { f.act = A.IDLE; f.at = 0; }
-    else if (f.act === A.DOWN && f.at >= 0.7) {
-      if (f.hp > 0) { f.act = A.GETUP; f.at = 0; } else { f.act = A.KO; f.at = 0; }
-    } else if (f.act === A.GETUP && f.at >= 0.35) { f.act = A.IDLE; f.at = 0; }
-    else if ((f.act === A.BLOCK || f.act === A.CBLOCK) && f.bs <= 0 && !live) { f.act = A.IDLE; }
     // physics
-    if (f.air) {
-      f.vy -= 1500 * dt; f.y += f.vy * dt;
-      if (f.y <= 0) {
-        f.y = 0; f.vy = 0; f.air = false;
-        if (f.act === A.FALL) { f.act = A.DOWN; f.at = 0; }
-        else if (f.act === A.JUMP || f.act === A.JKICK) { f.act = A.IDLE; f.at = 0; f.vx = 0; }
+    if (f.air && f.act !== A.THROWN) {
+      f.vy -= GRAV * DTF; f.y += f.vy * DTF;
+      if (f.y <= 0 && f.vy <= 0) {
+        f.y = 0; f.vy = 0; f.air = 0;
+        if (f.act === A.FALL) { f.act = A.DOWN; f.fr = 0; f.at = 0; }
+        else if (f.act === A.RISING) { f.act = A.LAND; f.lag = f.str ? 16 : 11; f.fr = 0; f.at = 0; f.vx = 0; }
+        else if (f.act !== A.HURT) { f.act = A.LAND; f.lag = 3; f.fr = 0; f.at = 0; f.vx = 0; }
       }
     }
-    if (f.act === A.FIN || f.act === A.DIZZY || f.act === A.KO || f.act === A.DOWN) f.vx = 0;
-    f.x += (f.vx + f.kbx) * dt;
-    f.kbx *= Math.exp(-(f.air ? 2 : 9) * dt);
+    if (f.act === A.FIN || f.act === A.DIZZY || f.act === A.KO || f.act === A.DOWN || f.act === A.HURT || f.act === A.BLOCK || f.act === A.CBLOCK || f.act === A.THROWN || f.act === A.LAND || f.act === A.GETUP) f.vx = 0;
+    if (f.act !== A.THROWN) {
+      f.x += (f.vx + f.kbx) * DTF;
+      f.kbx *= f.air ? KBA : KBG;
+      if (Math.abs(f.kbx) < 1) f.kbx = 0;
+    }
     if (f.x < 30) { f.x = 30; f.kbx = 0; }
     if (f.x > AW - 30) { f.x = AW - 30; f.kbx = 0; }
-    // hubcap in flight
-    if (f.proj) {
-      const p = f.proj;
-      p.t += dt; p.x += p.vx * dt;
-      if (p.x < -40 || p.x > AW + 40) f.proj = null;
-      else if (!invuln(o) && Math.abs(o.x - p.x) < 26 && o.y < 130) {
-        const croucher = !o.air && (o.act === A.CROUCH || o.act === A.CBLOCK);
-        if (!croucher) { hit(d, i, { dmg: F.HUBCAP.dmg, kb: F.HUBCAP.kb, stun: F.HUBCAP.stun, h: 'high' }, A.HUBCAP, true); f.proj = null; }
-      }
+    // the hubcap in flight
+    if (f.pOn) {
+      f.px += f.pvx * DTF;
+      if (f.px < -40 || f.px > AW + 40) f.pOn = 0;
+      else if (!untouchable(o) && Math.abs(o.x - f.px) < 30 && o.y < 125) { const sx = f.px; f.pOn = 0; hit(d, i, HUB[f.pstr], A.HUBCAP, sx - Math.sign(f.pvx)); }
     }
   }
   function separate(d) {
     const [a, b] = d.f;
-    if (Math.abs(a.y - b.y) > 60) return;
-    if (a.act === A.KO || b.act === A.KO || a.act === A.DOWN || b.act === A.DOWN) return;
-    const dx = b.x - a.x, min = 46;
+    if (Math.abs(a.y - b.y) > 70) return;
+    const lying = (f) => f.act === A.KO || f.act === A.DOWN || f.act === A.THROWN || f.act === A.FALL;
+    if (lying(a) || lying(b)) return;
+    const dx = b.x - a.x, min = 44;
     if (Math.abs(dx) < min) {
-      const push = (min - Math.abs(dx)) / 2, s = dx >= 0 ? 1 : -1;
+      const s = dx > 0 ? 1 : dx < 0 ? -1 : a.face;
+      const push = (min - Math.abs(dx)) / 2;
       a.x -= push * s; b.x += push * s;
-      for (const f of d.f) f.x = Math.max(30, Math.min(AW - 30, f.x));
+      for (const [p, q] of [[a, b], [b, a]]) { if (p.x < 30) { q.x += 30 - p.x; p.x = 30; } if (p.x > AW - 30) { q.x -= p.x - (AW - 30); p.x = AW - 30; } }
     }
   }
 
   // ---------------------------------------------------------------- the fight's state machine
-  // keys: [fighter 0 keys, fighter 1 keys] (the usual K bitmask: arrows, FIRE = punch, HAND = kick)
-  // every float rounded to a thousandth after each step, so a state sent over the network (F.save) is exact and
+  // keys: [fighter 0 keys, fighter 1 keys] (the usual K bitmask: arrows, and LP / HP / LK / HK above)
+  // every number rounded to a thousandth after each step, so a state sent over the network (F.save) is exact and
   // a fighter's page that replays the same keys gets bit-for-bit the same fight as the game
   const q = (v) => Math.round(v * 1000) / 1000;
   function quant(d) {
-    d.t = q(d.t); d.clock = q(d.clock); d.rt = q(d.rt);
+    for (const k of DK) d[k] = q(d[k]);
     for (const f of d.f) {
-      f.x = q(f.x); f.y = q(f.y); f.vx = q(f.vx); f.vy = q(f.vy); f.kbx = q(f.kbx); f.hp = q(f.hp); f.at = q(f.at);
-      f.stun = q(f.stun); f.bs = q(f.bs); f.lastHitT = q(f.lastHitT); f.taken = q(f.taken);
-      if (f.proj) { f.proj.x = q(f.proj.x); f.proj.vx = q(f.proj.vx); f.proj.t = q(f.proj.t); }
-      if (f.buf) f.buf.t = q(f.buf.t);
-      for (const h of f.hist) h[1] = q(h[1]);
-      while (f.hist.length && d.clock - f.hist[0][1] >= 0.75) f.hist.shift(); // older presses never matter
+      for (const k of FK) f[k] = q(f[k]);
+      while (f.dirs.length && d.af - f.dirs[0][1] > 60) f.dirs.shift(); // older directions never matter
     }
+    d.wins = [d.w0, d.w1]; d.lh = [d.lh0, d.lh1, d.lh2, d.lh3];
   }
-  F.step = function (d, keys, dt) {
+  F.step = function (d, keys) {
     if (d.done) return;
-    stepInner(d, keys, dt);
+    stepInner(d, keys);
     quant(d);
   };
-  function stepInner(d, keys, dt) {
-    d.t += dt; d.clock += dt;
+  function stepInner(d, keys) {
+    d.clock += DTF;
     const live0 = d.ph === PH.FIGHT || (d.ph === PH.FINISH && d.win === 0);
     const live1 = d.ph === PH.FIGHT || (d.ph === PH.FINISH && d.win === 1);
-    control(d, 0, keys[0] | 0, live0);
-    control(d, 1, keys[1] | 0, live1);
+    input(d, 0, keys[0] | 0, live0);
+    input(d, 1, keys[1] | 0, live1);
+    // hitstop: on a hit, everything holds still for a few frames (that's the crunch); keys still go into the buffer
+    if (d.frz > 0) { d.frz--; if (!d.frz) d.sf = 0; return; }
+    d.af++; d.t += DTF;
     if (d.ph !== PH.FATAL) {
-      update(d, 0, dt, live0);
-      update(d, 1, dt, live1);
+      update(d, 0, live0);
+      update(d, 1, live1);
       separate(d);
+      // two hubcaps meet in the air: both drop
+      const [a, b] = d.f;
+      if (a.pOn && b.pOn && Math.abs(a.px - b.px) < 28) { a.pOn = 0; b.pOn = 0; d.hs++; d.lh0 = 2; d.lh1 = 0; d.lh2 = 1; d.lh3 = A.HUBCAP; }
     }
     switch (d.ph) {
       case PH.INTRO:
         if (d.t >= 2.1) { d.ph = PH.FIGHT; d.t = 0; }
         break;
       case PH.FIGHT:
-        d.rt -= dt;
+        d.rt -= DTF;
         if (d.rt <= 0) {
           d.rt = 0;
           const [a, b] = d.f;
           if (Math.abs(a.hp - b.hp) < 0.5) { d.rw = -1; d.ph = PH.KO; d.t = 0; } // a draw: the round is replayed
           else {
             const wi = a.hp > b.hp ? 0 : 1, l = d.f[1 - wi];
-            l.hp = 0; l.act = A.FALL; l.at = 0; l.air = true; l.vy = 300;
+            l.hp = 0; l.act = A.FALL; l.fr = 0; l.at = 0; l.air = 1; l.vy = 300;
             ko(d, wi);
           }
         }
         break;
       case PH.KO: {
         const w = d.rw >= 0 ? d.f[d.rw] : null;
-        if (w && d.t > 1.2 && neutral(w) && !w.air) { w.act = A.WIN; w.at = 0; }
+        if (w && d.t > 1.2 && isNeutral(w) && !w.air) { w.act = A.WIN; w.fr = 0; w.at = 0; }
         if (d.t >= 3.4) {
           d.round++;
-          if (d.round > 7) { d.win = d.wins[0] >= d.wins[1] ? 0 : 1; d.res = 1; d.ph = PH.OVER; d.t = 0; break; }
+          if (d.round > 7) { d.win = d.w0 >= d.w1 ? 0 : 1; d.res = 1; d.ph = PH.OVER; d.t = 0; break; }
           resetRound(d);
         }
         break;
@@ -311,7 +464,7 @@
       case PH.FINISH:
         if (d.t >= 7) {
           const l = d.f[1 - d.win];
-          l.act = A.FALL; l.at = 0; l.air = true; l.vy = 200;
+          l.act = A.FALL; l.fr = 0; l.at = 0; l.air = 1; l.vy = 200;
           d.res = 1; d.ph = PH.OVER; d.t = 0;
         }
         break;
@@ -320,121 +473,131 @@
         break;
       case PH.OVER: {
         const w = d.f[d.win];
-        if (d.t > 0.8 && w.act !== A.WIN && neutral(w)) { w.act = A.WIN; w.at = 0; }
-        if (d.t >= 2.8) d.done = true;
+        if (d.t > 0.8 && w.act !== A.WIN && isNeutral(w)) { w.act = A.WIN; w.fr = 0; w.at = 0; }
+        if (d.t >= 2.8) d.done = 1;
         break;
       }
     }
   }
 
   // ---------------------------------------------------------------- bot fighter
-  // Returns the key bitmask a bot presses this tick. mem is the bot's own scratch object.
-  F.bot = function (d, i, mem, rnd) {
+  // Returns the key bitmask a bot presses this frame. mem is the bot's own scratch object; skill 1-5.
+  // It fights like a person at a cabinet: pokes and sweeps, hubcaps from far away, jump-ins, anti-air uppercuts,
+  // blocks (more often the better it is), throws up close, and the odd combo into a special.
+  F.bot = function (d, i, mem, rnd, skill) {
     const f = d.f[i], o = d.f[1 - i];
-    const fwd = f.face > 0 ? K.RIGHT : K.LEFT, back = f.face > 0 ? K.LEFT : K.RIGHT;
-    const script = (steps) => { mem.seq = []; for (const s of steps) { for (let n = 0; n < 3; n++) mem.seq.push(s); mem.seq.push(0, 0); } };
-    if (d.ph !== mem.ph) { mem.ph = d.ph; mem.seq = null; mem.wait = 0.6 + rnd() * 0.9; mem.hold = 0; mem.holdT = 0; }
+    const sk = Math.max(1, Math.min(5, skill || 3)) - 1;
+    const fwd = f.face > 0 ? K.RIGHT : K.LEFT, back = f.face > 0 ? K.LEFT : K.RIGHT, D = K.DOWN;
+    const plan = (steps) => { mem.seq = []; for (const [k, n] of steps) for (let j = 0; j < n; j++) mem.seq.push(k); };
+    const QCF = (btn) => [[D, 2], [D | fwd, 2], [fwd | btn, 2], [0, 2]];
+    const DPm = (btn) => [[fwd, 2], [D, 2], [D | fwd | btn, 2], [0, 2]];
+    const QCB = (btn) => [[D, 2], [D | back, 2], [back | btn, 2], [0, 2]];
+    if (d.ph !== mem.ph) { mem.ph = d.ph; mem.seq = null; mem.wait = 30 + ((rnd() * 40) | 0); mem.hold = 0; mem.holdT = 0; mem.pick = 0; }
     if (mem.seq && mem.seq.length) return mem.seq.shift();
     const dist = Math.abs(o.x - f.x);
     if (d.ph === PH.FINISH) {
       if (i !== d.win) return 0;
-      mem.wait -= 1 / 60;
-      if (mem.wait > 0) return 0;
+      if (mem.wait-- > 0) return 0;
       if (!mem.pick) mem.pick = 1 + Math.floor(rnd() * 3);
-      if (mem.pick === 2 && dist > 110) return fwd;
-      if (mem.pick === 3 && dist > 240) return fwd;
-      if (mem.pick === 1) script([back, back, K.HAND]);
-      else if (mem.pick === 2) script([K.DOWN, K.UP, K.FIRE]);
-      else script([fwd, back, fwd, K.FIRE]);
+      if (mem.pick === 2 && dist > 120) return fwd;
+      if (mem.pick === 3 && dist > 250) return fwd;
+      if (mem.pick === 1) plan([[back, 2], [0, 2], [back, 2], [back | LK, 2], [0, 2]]);
+      else if (mem.pick === 2) plan([[D, 3], [0, 1], [K.UP, 1], [K.UP | LP, 2], [0, 2]]);
+      else plan([[fwd, 2], [0, 1], [back, 2], [0, 1], [fwd, 2], [fwd | LP, 2], [0, 2]]);
       return 0;
     }
-    if (d.ph !== PH.FIGHT) return 0;
-    // react to an attack starting: block about half the time (they're no pros)
-    const mv = MV[o.act];
+    if (d.ph !== PH.FIGHT || d.frz > 0) return mem.hold && mem.holdT > 0 ? mem.hold : 0;
+    const blockP = [0.22, 0.38, 0.52, 0.66, 0.8][sk], aaP = [0.12, 0.28, 0.45, 0.6, 0.78][sk], think = [28, 22, 17, 13, 9][sk];
+    // reacting: an attack coming, someone jumping in, a hubcap flying at us
+    const omv = MV[o.act];
     if (o.act !== mem.oAct) {
       mem.oAct = o.act;
-      if (mv && dist < 170 && rnd() < 0.4) { mem.hold = o.act === A.SWEEP ? back | K.DOWN : back; mem.holdT = 0.45; }
+      if (omv && omv.dmg && dist < (omv.reach || 90) + 70 && !f.air && rnd() < blockP) { mem.hold = omv.h === 'low' ? back | D : back; mem.holdT = 22; }
     }
-    if (o.proj && Math.abs(o.proj.x - f.x) < 200 && !mem.dodged) { mem.dodged = true; const r = rnd(); if (r < 0.35) { mem.hold = K.DOWN; mem.holdT = 0.5; } else if (r < 0.6) { mem.hold = back; mem.holdT = 0.5; } }
-    if (!o.proj) mem.dodged = false;
-    if (mem.holdT > 0) { mem.holdT -= 1 / 60; return mem.hold; }
-    mem.wait -= 1 / 60;
-    if (mem.wait > 0) return 0;
-    mem.wait = 0.2 + rnd() * 0.35;
+    if (o.air && !mem.aa && o.vy < 120 && dist < 150 && Math.sign(o.x - f.x) === f.face && !f.air) {
+      mem.aa = 1;
+      if (rnd() < aaP) { mem.holdT = 0; if (dist < 120 && rnd() < 0.6) plan(DPm(HP)); else plan([[D, 4], [D | HP, 2], [D, 6]]); return mem.seq.shift(); }
+    }
+    if (!o.air) mem.aa = 0;
+    if (o.pOn && !mem.dodge && Math.sign(f.x - o.px) === Math.sign(o.pvx) && Math.abs(f.x - o.px) < 230) {
+      mem.dodge = 1;
+      const r = rnd();
+      if (r < 0.3 && dist > 200) plan([[K.UP | fwd, 5], [0, 14], [HK, 2], [0, 20]]);
+      else if (r < 0.65) { mem.hold = back; mem.holdT = 40; }
+      else if (!f.pOn) plan(QCF(rnd() < 0.5 ? LP : HP));
+      if (mem.seq) return mem.seq.shift();
+    }
+    if (!o.pOn) mem.dodge = 0;
+    // just landed a light hit: keep it going into a special (the better bots do)
+    if (f.conn && !mem.confirmed && (f.act === A.CLK || f.act === A.LP || f.act === A.CLP || f.act === A.LK) && rnd() < 0.25 + sk * 0.15) {
+      mem.confirmed = 1;
+      const r = rnd();
+      plan(r < 0.4 ? QCF(LP) : r < 0.75 ? DPm(LP) : QCB(LK));
+      return mem.seq.shift();
+    }
+    if (!f.conn) mem.confirmed = 0;
+    if (f.act === A.GETUP && dist < 110 && rnd() < 0.01 + sk * 0.012) { plan(DPm(HP)); return 0; }
+    if (mem.holdT > 0) { mem.holdT--; return mem.hold; }
+    if (mem.wait-- > 0) return 0;
+    mem.wait = think + ((rnd() * think) | 0);
+    if (!isNeutral(f) || f.air) return 0;
     const r = rnd();
-    if (dist > 170) {
-      if (r < 0.22 && !f.proj) { script([back, fwd | K.FIRE]); return 0; }
-      if (r < 0.3) { script([K.UP | fwd]); mem.seq.push(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, K.HAND, K.HAND); return 0; }
-      mem.hold = fwd; mem.holdT = 0.3 + rnd() * 0.3; return fwd;
+    if (dist > 230) {
+      if (r < 0.32 && !f.pOn) plan(QCF(rnd() < 0.5 ? LP : HP));
+      else if (r < 0.55) { mem.hold = fwd; mem.holdT = 18 + ((rnd() * 18) | 0); }
+      else if (r < 0.68) plan([[fwd, 2], [0, 2], [fwd, 2], [0, 12]]);
+      else if (r < 0.82) plan([[K.UP | fwd, 5], [0, 15], [rnd() < 0.5 ? HK : HP, 2], [0, 20]]);
+      return mem.seq ? mem.seq.shift() : mem.holdT > 0 ? mem.hold : 0;
     }
-    if (dist > 100) {
-      if (r < 0.25) { script([fwd, fwd, K.HAND]); return 0; }
-      if (r < 0.4) { script([K.DOWN, back, K.HAND]); return 0; }
-      mem.hold = fwd; mem.holdT = 0.2; return fwd;
+    if (dist > 118) {
+      if (r < 0.28) { mem.hold = fwd; mem.holdT = 10 + ((rnd() * 14) | 0); }
+      else if (r < 0.42) plan([[K.UP | fwd, 5], [0, 13], [rnd() < 0.5 ? HK : LK, 2], [0, 20]]);
+      else if (r < 0.55 && !f.pOn) plan(QCF(LP));
+      else if (r < 0.65) plan([[0, 1], [HK, 2], [0, 6]]);
+      else if (r < 0.75) plan([[fwd, 2], [0, 2], [fwd, 2], [0, 6]]);
+      else if (r < 0.85) { mem.hold = back; mem.holdT = 12; }
+      else { mem.hold = fwd; mem.holdT = 12; }
+      return mem.seq ? mem.seq.shift() : mem.holdT > 0 ? mem.hold : 0;
     }
-    if (r < 0.3) { mem.seq = [K.FIRE, K.FIRE, ...Array(10).fill(0), K.FIRE, K.FIRE, ...Array(10).fill(0), K.HAND, K.HAND]; return 0; }
-    if (r < 0.45) { mem.seq = [K.HAND, K.HAND]; return 0; }
-    if (r < 0.57) { mem.seq = Array(6).fill(K.DOWN).concat([K.DOWN | K.HAND, K.DOWN | K.HAND], Array(10).fill(K.DOWN)); return 0; }
-    if (r < 0.7) { mem.seq = Array(6).fill(K.DOWN).concat([K.DOWN | K.FIRE, K.DOWN | K.FIRE], Array(10).fill(K.DOWN)); return 0; }
-    if (r < 0.78) { script([K.FIRE]); mem.seq.push(...Array(8).fill(0), K.FIRE, K.FIRE, ...Array(10).fill(0), K.DOWN, K.DOWN, K.DOWN | K.FIRE, K.DOWN | K.FIRE); return 0; }
-    mem.hold = back; mem.holdT = 0.25; return back;
+    if (r < 0.2) plan([[D, 2], [D | LK, 2], [D, 6], [D | LK, 2], [D, 3], ...QCF(LP)]);
+    else if (r < 0.34) plan([[LP, 2], [0, 6], [LP, 2], [0, 4], [HP, 2], [0, 3], ...QCB(HK)]);
+    else if (r < 0.46 && dist < 76) plan([[fwd, 2], [fwd | HP, 2], [0, 4]]);
+    else if (r < 0.56) plan([[HP, 2], [0, 4], ...DPm(HP)]);
+    else if (r < 0.66) plan([[D, 2], [D | HK, 2], [D, 8]]);
+    else if (r < 0.76) plan([[0, 1], [LK, 2], [0, 4], ...QCB(LK)]);
+    else if (r < 0.86) { mem.hold = rnd() < 0.5 ? back : back | D; mem.holdT = 24; }
+    else if (r < 0.93) plan([[back, 2], [0, 2], [back, 2], [0, 10]]);
+    else { mem.hold = back; mem.holdT = 10; }
+    return mem.seq ? mem.seq.shift() : mem.holdT > 0 ? mem.hold : 0;
   };
 
-  // ---------------------------------------------------------------- network form
-  // A flat list of integers, decoded with F.unpack on the client.
-  const FPACK = 10;
-  F.pack = function (d) {
-    const out = [d.ph, d.round, d.wins[0], d.wins[1], Math.round(d.t * 20), Math.ceil(d.rt), d.win + 1, d.rw + 1, d.fk, d.flaw, d.res, d.hs % 4096, d.lh[0], d.lh[1], d.lh[2], d.lh[3]];
-    for (const f of d.f) out.push(Math.round(f.x), Math.round(f.y), Math.ceil(f.hp), f.act, Math.min(4095, Math.round(f.at * 100)), f.face > 0 ? 1 : 0, f.combo, f.cn, f.proj ? Math.round(f.proj.x) : -999, f.proj ? (f.proj.vx > 0 ? 1 : 0) : 0);
-    return out;
-  };
-  F.PACKLEN = 16 + FPACK * 2;
-  F.unpack = function (v, o = 0) {
-    const d = { ph: v[o], round: v[o + 1], wins: [v[o + 2], v[o + 3]], t: v[o + 4] / 20, rt: v[o + 5], win: v[o + 6] - 1, rw: v[o + 7] - 1, fk: v[o + 8], flaw: v[o + 9], res: v[o + 10], hs: v[o + 11], lh: [v[o + 12] - 1, v[o + 13], v[o + 14], v[o + 15]], f: [] };
-    for (let i = 0; i < 2; i++) {
-      const b = o + 16 + i * FPACK;
-      d.f.push({ x: v[b], y: v[b + 1], hp: v[b + 2], act: v[b + 3], at: v[b + 4] / 100, face: v[b + 5] ? 1 : -1, combo: v[b + 6], cn: v[b + 7], px: v[b + 8], pvx: v[b + 9] ? 1 : -1 });
-    }
-    return d;
-  };
   // ---------------------------------------------------------------- full state, for client-side prediction
-  // Everything F.step needs, as a flat list of integers (times and positions in thousandths). A fighter's own page
-  // loads the latest state from the game, replays the keys it pressed since, and keeps stepping locally, so
-  // its own moves react instantly (rollback-style). F.load(F.save(d)) steps on exactly like d.
-  const TOKS = ' FBDU', BTNS = ' PK';
-  const encM = (m) => { let n = 0; for (let i = m.length - 1; i >= 0; i--) n = n * 5 + TOKS.indexOf(m[i]); return n; };
-  const decM = (n) => { let m = ''; while (n > 0) { m += TOKS[n % 5]; n = Math.floor(n / 5); } return m; };
+  // Everything F.step needs, as a flat list of integers (every number in thousandths; direction times relative to
+  // the current frame). A fighter's own page loads the latest state from the game, replays the keys it pressed
+  // since, and keeps stepping locally, so its own moves react instantly (rollback-style). F.load(F.save(d)) steps
+  // on exactly like d.
+  const r3 = (v) => Math.round(v * 1000);
   F.save = function (d) {
-    const r = (v) => Math.round(v * 1000), m = r; // positions and times in thousandths
-    const out = [d.ph, m(d.t), m(d.clock), d.round, d.wins[0], d.wins[1], m(d.rt), d.win, d.rw, d.fk, d.flaw, d.res, d.hs, d.lh[0], d.lh[1], d.lh[2], d.lh[3], d.done ? 1 : 0];
+    const out = DK.map((k) => r3(d[k]));
     for (const f of d.f) {
-      const hist = f.hist, p = f.proj;
-      out.push(r(f.x), r(f.y), r(f.vx), r(f.vy), r(f.kbx), f.face, r(f.hp), f.act, m(f.at), f.air ? 1 : 0, f.jk ? 1 : 0, f.pk, f.hitDone ? 1 : 0,
-        m(f.stun), m(f.bs), f.combo, f.cn, m(f.lastHitT), r(f.taken), f.thrown ? 1 : 0,
-        f.held.F | (f.held.B << 1) | (f.held.D << 2) | (f.held.U << 3),
-        p ? 1 : 0, p ? r(p.x) : 0, p ? r(p.vx) : 0, p ? m(p.t) : 0,
-        f.buf ? BTNS.indexOf(f.buf.b) : 0, f.buf ? m(f.buf.t) : 0, f.buf ? encM(f.buf.m) : 0,
-        f.chain.length, ...f.chain, hist.length);
-      for (const h of hist) out.push(TOKS.indexOf(h[0]), m(h[1]));
+      for (const k of FK) out.push(r3(f[k]));
+      out.push(f.dirs.length);
+      for (const [dr, t] of f.dirs) out.push(dr, t - d.af);
     }
     return out;
   };
   F.load = function (v, o = 0) {
     let i = o;
-    const n = () => v[i++], t = () => v[i++] / 1000, ms = t;
-    const d = { ph: n(), t: ms(), clock: ms(), round: n(), wins: [n(), n()], rt: ms(), win: n(), rw: n(), fk: n(), flaw: n(), res: n(), hs: n(), lh: [n(), n(), n(), n()], done: !!n(), f: [] };
-    for (let k = 0; k < 2; k++) {
-      const f = { x: t(), y: t(), vx: t(), vy: t(), kbx: t(), face: n(), hp: t(), act: n(), at: ms(), air: !!n(), jk: !!n(), pk: n(), hitDone: !!n(),
-        stun: ms(), bs: ms(), combo: n(), cn: n(), lastHitT: ms(), taken: t(), thrown: !!n() };
-      const h = n(); f.held = { F: h & 1, B: (h >> 1) & 1, D: (h >> 2) & 1, U: (h >> 3) & 1 };
-      const hasP = n(), px = t(), pvx = t(), pt = ms();
-      f.proj = hasP ? { x: px, y: 104, vx: pvx, t: pt } : null;
-      const bb = n(), bt = ms(), bm = n();
-      f.buf = bb ? { b: BTNS[bb], t: bt, m: decM(bm) } : null;
-      const cl = n(); f.chain = []; for (let j = 0; j < cl; j++) f.chain.push(n());
-      const hl = n(); f.hist = []; for (let j = 0; j < hl; j++) { const tk = TOKS[n()]; f.hist.push([tk, ms()]); }
+    const d = { f: [] };
+    for (const k of DK) d[k] = v[i++] / 1000;
+    for (let n = 0; n < 2; n++) {
+      const f = { dirs: [] };
+      for (const k of FK) f[k] = v[i++] / 1000;
+      const nd = v[i++];
+      for (let j = 0; j < nd; j++) { f.dirs.push([v[i], v[i + 1] + d.af]); i += 2; }
       d.f.push(f);
     }
+    d.wins = [d.w0, d.w1]; d.lh = [d.lh0, d.lh1, d.lh2, d.lh3];
     d.len = i - o;
     return d;
   };

@@ -9,7 +9,8 @@
   S.LEVEL = 30; // world units per storey
   const T = (S.T = { ROAD: 0, PAVE: 1, GRASS: 2, BUILD: 3, WATER: 4 });
   // HAND is the Space key: handbrake in a car, jump on foot (as in GTA2)
-  const K = (S.K = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, FIRE: 16, HAND: 32, ABS: 64 });
+  const K = (S.K = { UP: 1, DOWN: 2, LEFT: 4, RIGHT: 8, FIRE: 16, HAND: 32, ABS: 64, TUR: 128, BLOCK: 256, GRAB: 512 }); // BLOCK, GRAB: only in a street brawl // TUR: Tab held: Left/Right turn the turret (tank, boat)
+  S.TUR_SPEED = 2.4; // how fast a turret turns, radians a second
 
   S.rng = function (a) {
     return function () {
@@ -98,13 +99,18 @@
   S.TRAMP = 760; // a trampoline bounce: high enough to get up there
   S.TRAMP_R = 21;
   S.KERB = 17; // how far parked cars sit from the middle of their lane
-  S.SEA = 9; // extra tiles of open sea beyond the old shoreline
+  // shuffle in place with the city's own random numbers. Never sort(() => R() - 0.5): how that comes out depends on
+  // the JavaScript engine, so a server and a browser would build different cities from the same seed.
+  S.shuffle = (a, R) => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); const t = a[i]; a[i] = a[j]; a[j] = t; } return a; };
+  // bumped with every release: a server still running older code builds a different city, so the page warns
+  S.VERSION = '2026.11.26a';
+  S.SEA = 9; // tiles of open sea beyond the old shoreline
   S.genMap = function (seed, o) {
     o = o || {};
     const size = Math.max(0, Math.min(2, o.size == null ? 1 : o.size | 0));
     const islands = Math.max(0, Math.min(2, o.islands | 0));
     const R = S.rng(seed);
-    // open sea all round the city, wide enough to take a speedboat out for a spin (and for the race's water checkpoint)
+    // open sea all round the city, wide enough to take a speedboat out for a spin
     const SEA = S.SEA, CW = [64, 88, 116][size], W = CW + SEA * 2, H = W;
     const NB = [4, 6, 8][size], SC = (a) => a[size];
     const tiles = new Uint8Array(W * H).fill(T.WATER);
@@ -133,7 +139,7 @@
     for (const y of roadRows) for (let x = L; x <= Hi; x++) set(x, y, T.ROAD);
 
     // rivers: replace a road with water; only a few bridges cross. Own RNG so the rest of the city doesn't change.
-    const bridges = [], rail = new Uint8Array(W * H), ramps = [];
+    const bridges = [], rail = new Uint8Array(W * H), ramps = [], riverEnds = [];
     if (islands) {
       const RR = S.rng((seed ^ 0x5bd1e995) >>> 0);
       const pickIdx = (roads, lo, hi) => {
@@ -176,6 +182,20 @@
         const colsX = shuffle(cx.roads.filter((c2, k) => k > 0 && k < kx && !bCols.has(c2) && get(c2, ry - 1) === T.ROAD && get(c2, ry + 2) === T.ROAD)).slice(0, nJ);
         for (const c2 of colsX) { ramps.push({ x: c2, y: ry - 1, d: 1 }); ramps.push({ x: c2 + 1, y: ry + 2, d: 3 }); }
       }
+      // the other roads that dead-end at the water (no bridge, no ramp): they get a car-jump pickup instead (see
+      // S.pickupDefs), so every crossing has a way over. One per road end, in the lane heading for the water.
+      const rampRows = new Set(rowsX), rampCols = new Set();
+      for (const r of ramps) if (r.d === 1 || r.d === 3) rampCols.add(r.d === 1 ? r.x : r.x - 1);
+      for (const r of cy.roads) {
+        if (r === ry || bRows.has(r) || rampRows.has(r)) continue;
+        if (get(rx - 1, r + 1) === T.ROAD) riverEnds.push({ x: rx - 1, y: r + 1, d: 0 });
+        if (get(rx + 2, r) === T.ROAD) riverEnds.push({ x: rx + 2, y: r, d: 2 });
+      }
+      if (islands > 1) for (const c2 of cx.roads) {
+        if (c2 + 1 >= rx || bCols.has(c2) || rampCols.has(c2)) continue;
+        if (get(c2, ry - 1) === T.ROAD) riverEnds.push({ x: c2, y: ry - 1, d: 1 });
+        if (get(c2 + 1, ry + 2) === T.ROAD) riverEnds.push({ x: c2 + 1, y: ry + 2, d: 3 });
+      }
     }
 
     const buildings = [], trees = [], lots = [];
@@ -217,7 +237,8 @@
     {
       const RH = S.rng((seed ^ 0x2545f491) >>> 0);
       const want = [2, 2, 3][size]; // at least two in every city
-      const cands = buildings.filter((b) => b.w >= 2 && b.h >= 2).sort(() => RH() - 0.5);
+      const cands = buildings.filter((b) => b.w >= 2 && b.h >= 2);
+      S.shuffle(cands, RH);
       const isRoadT = (x, y) => get(x, y) === T.ROAD;
       for (const gap of [12, 6]) for (const T0 of cands) { // second pass: allow them closer together (a small city)
         if (helipads.length >= want) break;
@@ -245,7 +266,8 @@
     {
       const RS = S.rng((seed ^ 0x6c0ffee5) >>> 0);
       const want = [2, 2, 3][size];
-      const cands = buildings.map((b, i) => [b, i]).filter(([b]) => !b.pad && b.lv <= 3 && b.w >= 2 && b.h >= 2).sort(() => RS() - 0.5);
+      const cands = buildings.map((b, i) => [b, i]).filter(([b]) => !b.pad && b.lv <= 3 && b.w >= 2 && b.h >= 2);
+      S.shuffle(cands, RS);
       for (const [b, bi] of cands) {
         if (shops.length >= want) break;
         const cx = b.x + b.w / 2, cy = b.y + b.h / 2;
@@ -336,7 +358,7 @@
         if (d > sd) { sd = d; sb = p0; }
       }
       race.start = sb;
-      // one checkpoint out at sea, between two street ones, where the course passes closest to the shore: only a boat
+      // two checkpoints out at sea, between two street ones, where the course passes closest to the shore: only a boat
       // counts there. A row of race boats is moored at the nearest bit of shore (the pit), next to a landing where you
       // leave your car and pick it up again on the way back.
       race.pit = []; race.land = null;
@@ -354,7 +376,22 @@
         const clear = (t) => { for (let k = -3; k <= 3; k++) if (!land(t + k)) return false; return t >= L + 3 && t <= Hi - 3; };
         for (let k = 0; k < 12 && !clear(along); k++) { if (clear(along + k)) { along += k; break; } if (clear(along - k)) { along -= k; break; } }
         const C = { x: ((ny ? along : row) + 0.5) * TILE, y: ((ny ? row : along) + 0.5) * TILE }; // the landing, on the shore
-        race.cps.splice(best.i + 1, 0, { x: C.x + nx * 7 * TILE, y: C.y + ny * 7 * TILE, v: ny ? 0 : 1, w: 1 });
+        // the buoys: spread out round the whole city. Out from the landing, then all the way round the island
+        // clockwise (the middle of each of the other three shores), and back to the landing for a car
+        {
+          const ORDER = [0, 3, 1, 2]; // top, right, bottom, left: clockwise
+          const mid = (L + Hi) / 2, OUT = 5;
+          const shoreAt = (side, t) => { // a point out at sea off one shore, t tiles along it
+            const sx = [0, 0, -1, 1][side], sy = [-1, 1, 0, 0][side], r = side === 0 || side === 2 ? lo : hi;
+            let o = OUT, x, y;
+            for (; o < OUT + 4; o++) { x = (sy ? t : r + sx * o) + 0.5; y = (sy ? r + sy * o : t) + 0.5; if (get(Math.floor(x), Math.floor(y)) === T.WATER) break; }
+            return { x: x * TILE, y: y * TILE, v: sy ? 0 : 1, w: 1 };
+          };
+          const cw = [1, -1, -1, 1][s]; // which way along this shore is clockwise
+          const k0 = ORDER.indexOf(s), buoys = [shoreAt(s, Math.max(L + 2, Math.min(Hi - 2, along + cw * 8)))];
+          for (let n = 1; n <= 3; n++) buoys.push(shoreAt(ORDER[(k0 + n) % 4], Math.round(mid)));
+          race.cps.splice(best.i + 1, 0, ...buoys);
+        }
         race.land = C;
         for (const k of [0, -1, 1, -2, 2, -3, 3, -4]) {
           const x = C.x + nx * (TILE - 6) + ax * k * 66, y = C.y + ny * (TILE - 6) + ay * k * 66;
@@ -382,7 +419,7 @@
         cands.push([x, y, shore]);
       }
       const want = [2, 3, 4][size];
-      for (const gap of [14, 7]) for (const [x, y, [dx, dy]] of cands.sort(() => RB() - 0.5)) {
+      for (const gap of [14, 7]) for (const [x, y, [dx, dy]] of S.shuffle(cands, RB)) {
         if (boats.length >= want) break;
         if (boats.some((b) => Math.hypot(b.x / TILE - x, b.y / TILE - y) < gap)) continue;
         boats.push({ x: (x + 0.5) * TILE + dx * 6, y: (y + 0.5) * TILE + dy * 6, a: Math.atan2(dx, -dy) }); // moored against the shore, nose along it
@@ -390,7 +427,7 @@
       if (carSpots.length) { const s = carSpots[Math.floor(RB() * carSpots.length)]; tankSpot = { x: s.x, y: s.y, a: s.a }; }
     }
     return {
-      seed, size, islands, bridges, rail, ramps, helipads, tramps, shops, race, boats, tankSpot, rampAt: new Map(ramps.map((r) => [r.y * W + r.x, r.d])), w: W, h: H, tiles, heights, buildings, trees, lots, spawns, pickupSpots, carSpots, cwSpots,
+      seed, size, islands, bridges, rail, ramps, riverEnds, helipads, tramps, shops, race, boats, tankSpot, rampAt: new Map(ramps.map((r) => [r.y * W + r.x, r.d])), w: W, h: H, tiles, heights, buildings, trees, lots, spawns, pickupSpots, carSpots, cwSpots,
       roadCols, roadRows, districts: dn.slice(0, 9),
     };
   };
@@ -455,6 +492,7 @@
 
   // ---------------------------------------------------------------- ped physics
   S.PED = { r: 9, run: 140, back: 70, turn: 4.2, jump: 285, grav: 950 }; // snappy jump: clears a car's bonnet in a few hundredths of a second
+  S.CHUTE_FALL = 75; S.CHUTE_GLIDE = 110; // parachute: sink speed, and gliding speed with Up held
   S.stepPed = function (m, p, k, dt) {
     let vx = 0, vy = 0;
     if (k & K.ABS) {
@@ -484,6 +522,21 @@
         p.vz = S.TRAMP; air = true; slide = false; p.sl = 0; p.tr = 1;
         p.jvx = Math.cos(p.a) * 70; p.jvy = Math.sin(p.a) * 70; // a gentle hop: you come down on a two-tile roof, not past it
       } else if (k & K.HAND && !(p.nj > 0)) { p.vz = S.PED.jump; air = true; slide = false; p.sl = 0; p.jvx = Math.cos(p.a) * S.PED.run; p.jvy = Math.sin(p.a) * S.PED.run; }
+    }
+    // under a parachute (bailed out of a helicopter): a slow, steerable float down; Up glides forward
+    if (p.ch) {
+      if (!air) p.ch = 0;
+      else {
+        const want = k & K.UP ? S.CHUTE_GLIDE : 22, f2 = 1 - Math.exp(-1.6 * dt);
+        p.jvx += (Math.cos(p.a) * want - p.jvx) * f2; p.jvy += (Math.sin(p.a) * want - p.jvy) * f2;
+        p.z += p.vz * dt; p.vz = Math.max(-S.CHUTE_FALL, p.vz - S.PED.grav * dt);
+        if (p.z <= gz) { p.z = gz; p.vz = 0; p.ch = 0; }
+        p.mv = 0;
+        p.x += (p.jvx + p.kx) * dt; p.y += (p.jvy + p.ky) * dt;
+        const f3 = Math.exp(-6 * dt); p.kx *= f3; p.ky *= f3;
+        S.collideCircle(m, p, S.PED.r, p.z);
+        return;
+      }
     }
     if (air || slide) {
       const sp = Math.hypot(p.jvx, p.jvy);
@@ -566,6 +619,8 @@
   };
   S.stepCar = function (m, c, k, dt) {
     if (c.t === S.HELI) return S.stepHeli(m, c, k, dt);
+    // tank and boat: holding Tab, Left and Right turn the turret instead of steering (the game turns the turret)
+    if ((k & K.TUR) && (c.t === S.TANK || c.t === S.BOAT || c.t === S.FIRE)) k &= ~(K.LEFT | K.RIGHT);
     const C = S.carStats(c);
     // in the air (car jump): no grip and no steering, gravity like a person's jump
     if (S.carAir(m, c)) {

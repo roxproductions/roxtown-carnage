@@ -6,3 +6,10 @@ errors.log
 Thumbs.db
 # your host's own Passenger config (see .htaccess.example)
 .htaccess
+plays.log
+log-key.txt
+errors-browser.jsonl
+errors-seen.json
+error-alert-topic.txt
+leaderboard.json*
+tmp/

@@ -10,14 +10,6 @@
   const clean = (t) => String(t).replace(/[\u0000-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, '').slice(0, 120);
   const store = { get: (k) => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 
-  // ---------------------------------------------------------------- play alerts
-  // The signup page lives on the server version; the relay pushes a phone alert (ntfy) when someone starts playing
-  // online, at most one every 15 minutes, so pinging it on every start is fine. Blocked in some sandboxes: no harm.
-  const ALERTS_PAGE = 'https://roxproductions.se/games/crosstown/alerts.html';
-  const NOTIFY = 'https://worms-relay.roxgamez.workers.dev/notify?game=gta&name=';
-  { const a = document.getElementById('alerts'); if (a) a.href = ALERTS_PAGE; }
-  const notifyPlaying = (name) => { try { fetch(NOTIFY + encodeURIComponent(String(name || '').slice(0, 16)), { mode: 'no-cors' }).catch(() => {}); } catch {} };
-
   // ---------------------------------------------------------------- lobby options
   const optEl = document.getElementById('artopts');
   optEl.hidden = false;
@@ -98,7 +90,15 @@
     else if (L.me) stEl.textContent = w ? `YOU ARE THE HOST: your choices set the city for everyone.${waiting}` : 'Nobody else is here yet. You are the host: anyone who opens this page joins your city.';
     else stEl.textContent = `${L.n.toUpperCase()} IS THE HOST and picks the city. You can hit the streets now or wait for them.`;
   }
-  function lobbyRefresh() { if (inGame) return; for (const p of segs) p(); lobbyStatus(); }
+  function lobbyRefresh() {
+    if (inGame) return;
+    for (const p of segs) p(); lobbyStatus();
+    const L = lobbyLead(); // someone's already playing in this room: only "join current game"
+    if (window.CC_LOBBY_RUNNING) {
+      const ps = (room && roomState === 'ok' ? room.peers() : []).filter((p) => p.presence && p.presence.g && !p.sameTab), nm = ps.map((p) => clean(p.presence.n || p.name || '').slice(0, 16)).filter(Boolean).slice(0, 4);
+      window.CC_LOBBY_RUNNING(!!(L && L.run), ps.length ? `● ${ps.length} playing now${nm.length ? ' · ' + nm.join(', ') : ''}` : '');
+    }
+  }
   lobbyRefresh();
   nameEl.addEventListener('input', () => lobbyShare());
   document.addEventListener('visibilitychange', () => lobbyShare());
@@ -154,7 +154,6 @@
   function roomTransport(o) {
     const R = room;
     inGame = true;
-    notifyPlaying(o.name);
     const t0 = performance.now();
     let myPeer = null, role = 'none', host = null, noHostSince = performance.now();
     let hiddenSince = document.hidden ? performance.now() : 0;
@@ -240,7 +239,7 @@
 
       for (const s of h.C) {
         const v = s.split('.').map(dec);
-        F.cars.set(v[0], [v[0], v[1], v[2], v[3] / 8, v[4] / 8, v[5] / 1000, v[6] / 2, v[7] / 2, v[8], v[9], v[10], v[11] || 0, (v[12] || 0) / 4]);
+        F.cars.set(v[0], [v[0], v[1], v[2], v[3] / 8, v[4] / 8, v[5] / 1000, v[6] / 2, v[7] / 2, v[8], v[9], v[10], v[11] || 0, (v[12] || 0) / 4, (v[13] || 0) / 100]);
         F.seenAt.set(v[0], now);
       }
       const evs = [];
@@ -260,8 +259,8 @@
       const [, ack36, base, ped, car, cw] = mrow.split('|');
       const b = base.split('.').map(dec);
       const me = { al: b[0], rs: b[1], hp: b[2], ar: b[3], w: b[4], fr: b[5], sc: b[6], q: b[7], iv: b[8], inv: b.slice(9, 18), wl: b[19] || 0, wi: b[20] || 0, cu: (b[21] || 0) / 10, pp: b[22] || 0, cr: b[23] || 0 };
-      if (ped) { const v = ped.split('.').map(dec); me.ped = [v[0] / 64, v[1] / 64, v[2] / 10000, v[3] / 16, v[4] / 16, v[5] / 64, v[6] / 16, v[7] / 16, v[8] / 16, v[9] / 64, v[10] || 0, (v[11] || 0) / 64]; }
-      if (car) { const v = car.split('.').map(dec); me.car = [v[0] / 64, v[1] / 64, v[2] / 10000, v[3] / 16, v[4] / 16, v[5] / 1000, v[6] / 1000, v[7], v[8] || 0, (v[9] || 0) / 64, (v[10] || 0) / 16, v[11] || 0]; }
+      if (ped) { const v = ped.split('.').map(dec); me.ped = [v[0] / 64, v[1] / 64, v[2] / 10000, v[3] / 16, v[4] / 16, v[5] / 64, v[6] / 16, v[7] / 16, v[8] / 16, v[9] / 64, v[10] || 0, (v[11] || 0) / 64, v[12] || 0]; }
+      if (car) { const v = car.split('.').map(dec); me.car = [v[0] / 64, v[1] / 64, v[2] / 10000, v[3] / 16, v[4] / 16, v[5] / 1000, v[6] / 1000, v[7], v[8] || 0, (v[9] || 0) / 64, (v[10] || 0) / 16, v[11] || 0, v[12] == null ? 100 : v[12]]; }
       me.cw = cw ? cw.split('.').map(dec) : null;
       const ack = dec(ack36);
       if (sentAt.has(ack)) o.onMsg({ t: 'po', c: sentAt.get(ack) });
@@ -353,7 +352,7 @@
       const C = [], incl = new Set(), live = new Set();
       for (const r of snap.C) {
         live.add(r[0]);
-        const s = [r[0], r[1], r[2], r[3] * 8, r[4] * 8, r[5] * 1000, r[6] * 2, r[7] * 2, r[8], r[9], r[10], r[11] || 0, (r[12] || 0) * 4].map(enc).join('.');
+        const s = [r[0], r[1], r[2], r[3] * 8, r[4] * 8, r[5] * 1000, r[6] * 2, r[7] * 2, r[8], r[9], r[10], r[11] || 0, (r[12] || 0) * 4, Math.round((r[13] || 0) * 100)].map(enc).join('.');
         let cs = H.carSent.get(r[0]);
         if (!cs || cs.s !== s) { cs = { s, n: 4 }; H.carSent.set(r[0], cs); }
         if (cs.n > 0) { cs.n--; C.push(s); incl.add(r[0]); }
@@ -370,8 +369,8 @@
       for (const { p, me, a } of snap.mes) {
         if (!p.peer || p.peer === myPeer) continue;
         const base = [me.al, me.rs, me.hp || 0, me.ar || 0, me.w, me.fr, me.sc, me.q, me.iv, ...me.inv, 0, me.wl || 0, me.wi || 0, (me.cu || 0) * 10, me.pp || 0, me.cr || 0].map(enc).join('.');
-        const ped = me.ped ? [me.ped[0] * 64, me.ped[1] * 64, me.ped[2] * 10000, me.ped[3] * 16, me.ped[4] * 16, me.ped[5] * 64, me.ped[6] * 16, me.ped[7] * 16, me.ped[8] * 16, me.ped[9] * 64, me.ped[10] || 0, (me.ped[11] || 0) * 64].map(enc).join('.') : '';
-        const car = me.car ? [me.car[0] * 64, me.car[1] * 64, me.car[2] * 10000, me.car[3] * 16, me.car[4] * 16, me.car[5] * 1000, me.car[6] * 1000, me.car[7], me.car[8] || 0, (me.car[9] || 0) * 64, (me.car[10] || 0) * 16, me.car[11] || 0].map(enc).join('.') : '';
+        const ped = me.ped ? [me.ped[0] * 64, me.ped[1] * 64, me.ped[2] * 10000, me.ped[3] * 16, me.ped[4] * 16, me.ped[5] * 64, me.ped[6] * 16, me.ped[7] * 16, me.ped[8] * 16, me.ped[9] * 64, me.ped[10] || 0, (me.ped[11] || 0) * 64, me.ped[12] || 0].map(enc).join('.') : '';
+        const car = me.car ? [me.car[0] * 64, me.car[1] * 64, me.car[2] * 10000, me.car[3] * 16, me.car[4] * 16, me.car[5] * 1000, me.car[6] * 1000, me.car[7], me.car[8] || 0, (me.car[9] || 0) * 64, (me.car[10] || 0) * 16, me.car[11] || 0, me.car[12] == null ? 100 : me.car[12]].map(enc).join('.') : '';
         const cw = me.cw ? me.cw.map(enc).join('.') : '';
         m.push(`${p.peer}|${enc(a)}|${base}|${ped}|${car}|${cw}`);
       }
@@ -401,6 +400,7 @@
     return {
       interp: 170,
       ok: () => true,
+      leave() { try { R.presence({ g: null, h: null, i: null }).catch(() => {}); if (R.leave) R.leave(); } catch {} }, // quit: off the room's list at once
       send(msg) {
         if (role === 'host' && host) { host.local.message(msg); return; }
         if (msg.t === 'i') {

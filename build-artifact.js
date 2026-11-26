@@ -10,7 +10,8 @@ const js = ['public/voices.js', 'shared/shared.js', 'shared/fight.js', 'shared/g
   if (/<\/script/i.test(src)) throw new Error(f + ' contains </script');
   return `<script>\n${src}\n</script>`;
 }).join('\n');
-const out = `<title>RoxTown Carnage</title>
+const out = `<meta charset="utf-8">
+<title>RoxTown Carnage</title>
 <style>
 :root { color-scheme: dark; }
 ${style}
